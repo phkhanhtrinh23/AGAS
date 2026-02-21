@@ -1,0 +1,9 @@
+{
+  "dataset": "ml-latest",
+  "interactions": 100,
+  "unique_users": 2,
+  "unique_items": 97,
+  "interactions_path": "processed_check/ml-latest/interactions.csv",
+  "items_path": "processed_check/ml-latest/items.csv",
+  "notes": "max_rows_per_dataset=100"
+}

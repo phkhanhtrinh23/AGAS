@@ -1,0 +1,9 @@
+dataset,item_id,title,genres,category,metadata_json,source
+amazon_review,0x8862134e67ff5c87:0x38b5e2ae99cd1fcf,Business 0x8862134e67,,local_business,"{""review_count"": 5, ""avg_rating"": 4.8}",amazon_review/review-Alabama_10.json
+amazon_review,0x886268e8fdc4fd2f:0x746533eb9aa4d4df,Business 0x886268e8fd,,local_business,"{""review_count"": 19, ""avg_rating"": 4.315789473684211}",amazon_review/review-Alabama_10.json
+amazon_review,0x8889aeaec69d4d49:0xb5c343f9d441acf2,Business 0x8889aeaec6,,local_business,"{""review_count"": 13, ""avg_rating"": 3.6923076923076925}",amazon_review/review-Alabama_10.json
+amazon_review,0x88626b2e333be6d9:0x2a00a09a7045984f,Business 0x88626b2e33,,local_business,"{""review_count"": 21, ""avg_rating"": 4.619047619047619}",amazon_review/review-Alabama_10.json
+amazon_review,0x88890c0ff1fb3a1d:0x2b4463747ed6a8a,Business 0x88890c0ff1,,local_business,"{""review_count"": 19, ""avg_rating"": 4.473684210526316}",amazon_review/review-Alabama_10.json
+amazon_review,0x888bd0206707c057:0x6de762f688cd78c3,Business 0x888bd02067,,local_business,"{""review_count"": 5, ""avg_rating"": 4.0}",amazon_review/review-Alabama_10.json
+amazon_review,0x8889221157fb3455:0x5c125c40c3eccc2a,Business 0x8889221157,,local_business,"{""review_count"": 12, ""avg_rating"": 4.333333333333333}",amazon_review/review-Alabama_10.json
+amazon_review,0x88892bb449d44cb3:0x7beaf0b2e3171a49,Business 0x88892bb449,,local_business,"{""review_count"": 6, ""avg_rating"": 2.3333333333333335}",amazon_review/review-Alabama_10.json

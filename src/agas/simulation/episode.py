@@ -1,0 +1,118 @@
+"""Episode runner for AGAS multi-agent simulations."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Dict, List, Sequence
+
+from agas.agents.coordinator import Coordinator
+from agas.agents.messages import EnvironmentFeedback
+from agas.agents.worker import WorkerAgent, WorkerState, build_worker_pool
+from agas.simulation.environment import AGASEnvironment
+
+
+@dataclass
+class EpisodeConfig:
+    """Episode-level configuration."""
+
+    num_steps: int = 4
+    num_workers: int = 4
+    # Backward-compatible aliases
+    n_steps: int | None = None
+    n_workers: int | None = None
+
+    def __post_init__(self) -> None:
+        if self.n_steps is not None:
+            self.num_steps = self.n_steps
+        if self.n_workers is not None:
+            self.num_workers = self.n_workers
+
+
+@dataclass
+class EpisodeResult:
+    """Structured result returned by episode runner."""
+
+    history: List[dict]
+    final_rank: int
+    final_total_candidates: int
+    final_worker_states: Dict[str, dict]
+
+    @property
+    def final_target_rank(self) -> int:
+        """Backward-compatible alias."""
+
+        return self.final_rank
+
+
+class AGASEpisodeRunner:
+    """Runs coordinator-worker-environment loop for one episode."""
+
+    def __init__(
+        self,
+        coordinator,
+        environment: AGASEnvironment,
+        workers: Dict[str, WorkerAgent] | None = None,
+        config: EpisodeConfig | None = None,
+    ):
+        if isinstance(coordinator, Coordinator):
+            self.coordinator = coordinator
+        else:
+            # Accept raw policy object for backwards compatibility.
+            self.coordinator = Coordinator(policy=coordinator)
+
+        self.environment = environment
+        self.config = config or EpisodeConfig()
+        self.workers = workers or build_worker_pool(default_agent_ids(self.config.num_workers))
+
+    def run(self) -> EpisodeResult:
+        history: List[dict] = []
+
+        for step in range(self.config.num_steps):
+            worker_states: Dict[str, WorkerState] = {aid: worker.state for aid, worker in self.workers.items()}
+            observation = self.environment.observation(step=step, worker_states=worker_states)
+            assignments = self.coordinator.assign_roles(observation=observation, worker_states=worker_states)
+
+            ctx = self.environment.build_worker_context()
+            reports = []
+            for agent_id in self.workers:
+                report = self.workers[agent_id].act(assignments[agent_id], step=step, ctx=ctx)
+                reports.append(report)
+
+            feedback: EnvironmentFeedback = self.environment.execute_step(
+                step=step,
+                reports=reports,
+                worker_states=worker_states,
+            )
+
+            history.append(
+                {
+                    "step": step,
+                    "observation": observation.to_dict(),
+                    "assignments": {aid: assn.to_dict() for aid, assn in assignments.items()},
+                    "reports": [rep.to_dict() for rep in reports],
+                    "feedback": feedback.to_dict(),
+                }
+            )
+
+        final_states = {
+            aid: {
+                "trust": float(worker.state.trust),
+                "risk": float(worker.state.risk),
+                "actions_taken": int(worker.state.actions_taken),
+                "role_history": list(worker.state.role_history),
+            }
+            for aid, worker in self.workers.items()
+        }
+
+        return EpisodeResult(
+            history=history,
+            final_rank=self.environment.current_rank,
+            final_total_candidates=self.environment.total_candidates,
+            final_worker_states=final_states,
+        )
+
+
+def default_agent_ids(n: int = 4) -> Sequence[str]:
+    """Standard worker id layout for AGAS experiments."""
+
+    return [f"agent_{i}" for i in range(1, n + 1)]

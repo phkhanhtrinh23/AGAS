@@ -1,0 +1,25 @@
+project:
+  name: AGAS
+  description: Agentic-empowered Group Shilling Attacks in Recommender Systems
+
+data:
+  data_root: data
+  processed_root: processed
+  max_rows_per_dataset: 2000000
+
+surrogate:
+  dataset: ml-latest-small
+  max_interactions: 500000
+  n_factors: 32
+
+agas:
+  num_agents: 4
+  num_steps: 4
+  target_item_id: "101"
+  target_keyword: horror
+  coordinator_policy: rule
+
+llm:
+  provider: openai
+  model: gpt-4o-mini
+  ollama_host: http://localhost:11434

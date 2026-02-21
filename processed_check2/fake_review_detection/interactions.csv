@@ -1,0 +1,11 @@
+dataset,user_id,item_id,rating,timestamp,split,context_json,source
+fake_review_detection,cM9GIlk61Qh2thLyJyxNyA,N7juvW8YoFIj7sEBzVF8GQ,5,1284681600,train,"{""flagged"": 1.0, ""restaurant_rating"": 4.0, ""reviewUsefulCount"": 0.0, ""ReviewLength"": 144.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,SVlSPBnjCzY2Bu9n8y2C5A,o54U2VkQama8FI30qDkWvw,5,1201737600,train,"{""flagged"": 0.0, ""restaurant_rating"": 4.0, ""reviewUsefulCount"": 0.0, ""ReviewLength"": 46.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,5HYWhPS3ozYifieW0lWMUw,1QKqtC4vML3QhkrSzwR_tQ,5,1269993600,train,"{""flagged"": 1.0, ""restaurant_rating"": 3.5, ""reviewUsefulCount"": 0.0, ""ReviewLength"": 18.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,dgKmhiTypR34XNPrMtQyMA,4wreIFjaPMppyEnzKHbozg,5,1272240000,train,"{""flagged"": 0.0, ""restaurant_rating"": 3.5, ""reviewUsefulCount"": 0.0, ""ReviewLength"": 41.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,uB3n74XHDFUKwHxfK5lDvA,N7juvW8YoFIj7sEBzVF8GQ,5,1283817600,train,"{""flagged"": 1.0, ""restaurant_rating"": 4.0, ""reviewUsefulCount"": 0.0, ""ReviewLength"": 40.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,DkxORcYjho2DKdzgOLqRiA,FCcgXODBs6O7MGH3VZNyLQ,4,1226275200,train,"{""flagged"": 0.0, ""restaurant_rating"": 4.0, ""reviewUsefulCount"": 1.0, ""ReviewLength"": 62.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,sIa1_QUuE071r22fOsTjng,mCHto10PBQOKnefm7gholg,3,1290384000,train,"{""flagged"": 0.0, ""restaurant_rating"": 4.0, ""reviewUsefulCount"": 1.0, ""ReviewLength"": 135.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,BQwceat0gqOEWUGivl96kw,_UJ3KqtHIHjExbAg-iIGUA,5,1251072000,train,"{""flagged"": 1.0, ""restaurant_rating"": 4.0, ""reviewUsefulCount"": 0.0, ""ReviewLength"": 25.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,67d4rtAomBW_o6kRSzTsZQ,CQ75CQSyrsmb-S3UAwCHpw,5,1254873600,train,"{""flagged"": 0.0, ""restaurant_rating"": 4.0, ""reviewUsefulCount"": 0.0, ""ReviewLength"": 2.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,K8bl2SqbiSUdxfggro-LuA,mCHto10PBQOKnefm7gholg,1,1279411200,train,"{""flagged"": 1.0, ""restaurant_rating"": 4.0, ""reviewUsefulCount"": 0.0, ""ReviewLength"": 108.0}",fake-review-detection/new_data_train.csv

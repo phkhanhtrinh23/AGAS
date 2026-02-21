@@ -1,0 +1,11 @@
+dataset,user_id,item_id,rating,timestamp,split,context_json,source
+market_bias,modcloth:u:Alex,modcloth:i:7443,4,1264060800,0,"{""category"": ""Dresses"", ""year"": 2012, ""model_attr"": ""Small"", ""user_attr"": ""Small""}",marketBias/data/df_modcloth.csv
+market_bias,modcloth:u:carolyn.agan,modcloth:i:7443,3,1264579200,0,"{""category"": ""Dresses"", ""year"": 2012, ""model_attr"": ""Small""}",marketBias/data/df_modcloth.csv
+market_bias,modcloth:u:Robyn,modcloth:i:7443,4,1264752000,0,"{""category"": ""Dresses"", ""year"": 2012, ""model_attr"": ""Small"", ""user_attr"": ""Small""}",marketBias/data/df_modcloth.csv
+market_bias,modcloth:u:De,modcloth:i:7443,4,1266048000,0,"{""category"": ""Dresses"", ""year"": 2012, ""model_attr"": ""Small""}",marketBias/data/df_modcloth.csv
+market_bias,modcloth:u:tasha,modcloth:i:7443,4,1266480000,0,"{""category"": ""Dresses"", ""year"": 2012, ""model_attr"": ""Small"", ""user_attr"": ""Small""}",marketBias/data/df_modcloth.csv
+market_bias,modcloth:u:gina.chihos,modcloth:i:7443,5,1267084800,0,"{""category"": ""Dresses"", ""year"": 2012, ""model_attr"": ""Small""}",marketBias/data/df_modcloth.csv
+market_bias,modcloth:u:Kim,modcloth:i:7443,2,1267171200,0,"{""category"": ""Dresses"", ""year"": 2012, ""model_attr"": ""Small"", ""user_attr"": ""Small""}",marketBias/data/df_modcloth.csv
+market_bias,modcloth:u:jess.betcher,modcloth:i:7443,5,1269586800,0,"{""category"": ""Dresses"", ""year"": 2012, ""model_attr"": ""Small""}",marketBias/data/df_modcloth.csv
+market_bias,modcloth:u:Elissa,modcloth:i:7443,4,1270537200,0,"{""category"": ""Dresses"", ""year"": 2012, ""model_attr"": ""Small"", ""user_attr"": ""Small""}",marketBias/data/df_modcloth.csv
+market_bias,modcloth:u:Yvette,modcloth:i:7443,4,1270710000,0,"{""category"": ""Dresses"", ""year"": 2012, ""model_attr"": ""Small"", ""user_attr"": ""Large""}",marketBias/data/df_modcloth.csv

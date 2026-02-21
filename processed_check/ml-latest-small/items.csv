@@ -1,0 +1,101 @@
+dataset,item_id,title,genres,category,metadata_json,source
+ml-latest-small,1,Toy Story (1995),Adventure|Animation|Children|Comedy|Fantasy,Adventure,"{""release_year"": 1995, ""primary_genre"": ""Adventure""}",ml-latest-small/movies.csv
+ml-latest-small,2,Jumanji (1995),Adventure|Children|Fantasy,Adventure,"{""release_year"": 1995, ""primary_genre"": ""Adventure""}",ml-latest-small/movies.csv
+ml-latest-small,3,Grumpier Old Men (1995),Comedy|Romance,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,4,Waiting to Exhale (1995),Comedy|Drama|Romance,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,5,Father of the Bride Part II (1995),Comedy,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,6,Heat (1995),Action|Crime|Thriller,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,7,Sabrina (1995),Comedy|Romance,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,8,Tom and Huck (1995),Adventure|Children,Adventure,"{""release_year"": 1995, ""primary_genre"": ""Adventure""}",ml-latest-small/movies.csv
+ml-latest-small,9,Sudden Death (1995),Action,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,10,GoldenEye (1995),Action|Adventure|Thriller,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,11,"American President, The (1995)",Comedy|Drama|Romance,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,12,Dracula: Dead and Loving It (1995),Comedy|Horror,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,13,Balto (1995),Adventure|Animation|Children,Adventure,"{""release_year"": 1995, ""primary_genre"": ""Adventure""}",ml-latest-small/movies.csv
+ml-latest-small,14,Nixon (1995),Drama,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,15,Cutthroat Island (1995),Action|Adventure|Romance,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,16,Casino (1995),Crime|Drama,Crime,"{""release_year"": 1995, ""primary_genre"": ""Crime""}",ml-latest-small/movies.csv
+ml-latest-small,17,Sense and Sensibility (1995),Drama|Romance,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,18,Four Rooms (1995),Comedy,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,19,Ace Ventura: When Nature Calls (1995),Comedy,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,20,Money Train (1995),Action|Comedy|Crime|Drama|Thriller,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,21,Get Shorty (1995),Comedy|Crime|Thriller,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,22,Copycat (1995),Crime|Drama|Horror|Mystery|Thriller,Crime,"{""release_year"": 1995, ""primary_genre"": ""Crime""}",ml-latest-small/movies.csv
+ml-latest-small,23,Assassins (1995),Action|Crime|Thriller,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,24,Powder (1995),Drama|Sci-Fi,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,25,Leaving Las Vegas (1995),Drama|Romance,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,26,Othello (1995),Drama,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,27,Now and Then (1995),Children|Drama,Children,"{""release_year"": 1995, ""primary_genre"": ""Children""}",ml-latest-small/movies.csv
+ml-latest-small,28,Persuasion (1995),Drama|Romance,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,29,"City of Lost Children, The (Cité des enfants perdus, La) (1995)",Adventure|Drama|Fantasy|Mystery|Sci-Fi,Adventure,"{""release_year"": 1995, ""primary_genre"": ""Adventure""}",ml-latest-small/movies.csv
+ml-latest-small,30,Shanghai Triad (Yao a yao yao dao waipo qiao) (1995),Crime|Drama,Crime,"{""release_year"": 1995, ""primary_genre"": ""Crime""}",ml-latest-small/movies.csv
+ml-latest-small,31,Dangerous Minds (1995),Drama,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,32,Twelve Monkeys (a.k.a. 12 Monkeys) (1995),Mystery|Sci-Fi|Thriller,Mystery,"{""release_year"": 1995, ""primary_genre"": ""Mystery""}",ml-latest-small/movies.csv
+ml-latest-small,34,Babe (1995),Children|Drama,Children,"{""release_year"": 1995, ""primary_genre"": ""Children""}",ml-latest-small/movies.csv
+ml-latest-small,36,Dead Man Walking (1995),Crime|Drama,Crime,"{""release_year"": 1995, ""primary_genre"": ""Crime""}",ml-latest-small/movies.csv
+ml-latest-small,38,It Takes Two (1995),Children|Comedy,Children,"{""release_year"": 1995, ""primary_genre"": ""Children""}",ml-latest-small/movies.csv
+ml-latest-small,39,Clueless (1995),Comedy|Romance,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,40,"Cry, the Beloved Country (1995)",Drama,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,41,Richard III (1995),Drama|War,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,42,Dead Presidents (1995),Action|Crime|Drama,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,43,Restoration (1995),Drama,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,44,Mortal Kombat (1995),Action|Adventure|Fantasy,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,45,To Die For (1995),Comedy|Drama|Thriller,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,46,How to Make an American Quilt (1995),Drama|Romance,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,47,Seven (a.k.a. Se7en) (1995),Mystery|Thriller,Mystery,"{""release_year"": 1995, ""primary_genre"": ""Mystery""}",ml-latest-small/movies.csv
+ml-latest-small,48,Pocahontas (1995),Animation|Children|Drama|Musical|Romance,Animation,"{""release_year"": 1995, ""primary_genre"": ""Animation""}",ml-latest-small/movies.csv
+ml-latest-small,49,When Night Is Falling (1995),Drama|Romance,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,50,"Usual Suspects, The (1995)",Crime|Mystery|Thriller,Crime,"{""release_year"": 1995, ""primary_genre"": ""Crime""}",ml-latest-small/movies.csv
+ml-latest-small,52,Mighty Aphrodite (1995),Comedy|Drama|Romance,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,53,Lamerica (1994),Adventure|Drama,Adventure,"{""release_year"": 1994, ""primary_genre"": ""Adventure""}",ml-latest-small/movies.csv
+ml-latest-small,54,"Big Green, The (1995)",Children|Comedy,Children,"{""release_year"": 1995, ""primary_genre"": ""Children""}",ml-latest-small/movies.csv
+ml-latest-small,55,Georgia (1995),Drama,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,57,Home for the Holidays (1995),Drama,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,58,"Postman, The (Postino, Il) (1994)",Comedy|Drama|Romance,Comedy,"{""release_year"": 1994, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,60,"Indian in the Cupboard, The (1995)",Adventure|Children|Fantasy,Adventure,"{""release_year"": 1995, ""primary_genre"": ""Adventure""}",ml-latest-small/movies.csv
+ml-latest-small,61,Eye for an Eye (1996),Drama|Thriller,Drama,"{""release_year"": 1996, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,62,Mr. Holland's Opus (1995),Drama,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,63,Don't Be a Menace to South Central While Drinking Your Juice in the Hood (1996),Comedy|Crime,Comedy,"{""release_year"": 1996, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,64,Two if by Sea (1996),Comedy|Romance,Comedy,"{""release_year"": 1996, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,65,Bio-Dome (1996),Comedy,Comedy,"{""release_year"": 1996, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,66,Lawnmower Man 2: Beyond Cyberspace (1996),Action|Sci-Fi|Thriller,Action,"{""release_year"": 1996, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,68,French Twist (Gazon maudit) (1995),Comedy|Romance,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,69,Friday (1995),Comedy,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,70,From Dusk Till Dawn (1996),Action|Comedy|Horror|Thriller,Action,"{""release_year"": 1996, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,71,Fair Game (1995),Action,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,72,Kicking and Screaming (1995),Comedy|Drama,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,73,"Misérables, Les (1995)",Drama|War,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,74,Bed of Roses (1996),Drama|Romance,Drama,"{""release_year"": 1996, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,75,Big Bully (1996),Comedy|Drama,Comedy,"{""release_year"": 1996, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,76,Screamers (1995),Action|Sci-Fi|Thriller,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,77,Nico Icon (1995),Documentary,Documentary,"{""release_year"": 1995, ""primary_genre"": ""Documentary""}",ml-latest-small/movies.csv
+ml-latest-small,78,"Crossing Guard, The (1995)",Action|Crime|Drama|Thriller,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,79,"Juror, The (1996)",Drama|Thriller,Drama,"{""release_year"": 1996, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,80,"White Balloon, The (Badkonake sefid) (1995)",Children|Drama,Children,"{""release_year"": 1995, ""primary_genre"": ""Children""}",ml-latest-small/movies.csv
+ml-latest-small,81,Things to Do in Denver When You're Dead (1995),Crime|Drama|Romance,Crime,"{""release_year"": 1995, ""primary_genre"": ""Crime""}",ml-latest-small/movies.csv
+ml-latest-small,82,Antonia's Line (Antonia) (1995),Comedy|Drama,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,83,Once Upon a Time... When We Were Colored (1995),Drama|Romance,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,85,Angels and Insects (1995),Drama|Romance,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,86,White Squall (1996),Action|Adventure|Drama,Action,"{""release_year"": 1996, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,87,Dunston Checks In (1996),Children|Comedy,Children,"{""release_year"": 1996, ""primary_genre"": ""Children""}",ml-latest-small/movies.csv
+ml-latest-small,88,Black Sheep (1996),Comedy,Comedy,"{""release_year"": 1996, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,89,Nick of Time (1995),Action|Thriller,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,92,Mary Reilly (1996),Drama|Horror|Thriller,Drama,"{""release_year"": 1996, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,93,Vampire in Brooklyn (1995),Comedy|Horror|Romance,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,94,Beautiful Girls (1996),Comedy|Drama|Romance,Comedy,"{""release_year"": 1996, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,95,Broken Arrow (1996),Action|Adventure|Thriller,Action,"{""release_year"": 1996, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,96,In the Bleak Midwinter (1995),Comedy|Drama,Comedy,"{""release_year"": 1995, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,97,"Hate (Haine, La) (1995)",Crime|Drama,Crime,"{""release_year"": 1995, ""primary_genre"": ""Crime""}",ml-latest-small/movies.csv
+ml-latest-small,99,Heidi Fleiss: Hollywood Madam (1995),Documentary,Documentary,"{""release_year"": 1995, ""primary_genre"": ""Documentary""}",ml-latest-small/movies.csv
+ml-latest-small,100,City Hall (1996),Drama|Thriller,Drama,"{""release_year"": 1996, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,101,Bottle Rocket (1996),Adventure|Comedy|Crime|Romance,Adventure,"{""release_year"": 1996, ""primary_genre"": ""Adventure""}",ml-latest-small/movies.csv
+ml-latest-small,102,Mr. Wrong (1996),Comedy,Comedy,"{""release_year"": 1996, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,103,Unforgettable (1996),Mystery|Sci-Fi|Thriller,Mystery,"{""release_year"": 1996, ""primary_genre"": ""Mystery""}",ml-latest-small/movies.csv
+ml-latest-small,104,Happy Gilmore (1996),Comedy,Comedy,"{""release_year"": 1996, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,105,"Bridges of Madison County, The (1995)",Drama|Romance,Drama,"{""release_year"": 1995, ""primary_genre"": ""Drama""}",ml-latest-small/movies.csv
+ml-latest-small,106,Nobody Loves Me (Keiner liebt mich) (1994),Comedy|Drama,Comedy,"{""release_year"": 1994, ""primary_genre"": ""Comedy""}",ml-latest-small/movies.csv
+ml-latest-small,107,Muppet Treasure Island (1996),Adventure|Children|Comedy|Musical,Adventure,"{""release_year"": 1996, ""primary_genre"": ""Adventure""}",ml-latest-small/movies.csv
+ml-latest-small,108,Catwalk (1996),Documentary,Documentary,"{""release_year"": 1996, ""primary_genre"": ""Documentary""}",ml-latest-small/movies.csv
+ml-latest-small,110,Braveheart (1995),Action|Drama|War,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv
+ml-latest-small,111,Taxi Driver (1976),Crime|Drama|Thriller,Crime,"{""release_year"": 1976, ""primary_genre"": ""Crime""}",ml-latest-small/movies.csv
+ml-latest-small,112,Rumble in the Bronx (Hont faan kui) (1995),Action|Adventure|Comedy|Crime,Action,"{""release_year"": 1995, ""primary_genre"": ""Action""}",ml-latest-small/movies.csv

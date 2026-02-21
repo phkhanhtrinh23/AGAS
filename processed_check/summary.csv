@@ -1,0 +1,10 @@
+dataset,interactions,unique_users,unique_items,interactions_path,items_path,notes
+ml-latest-small,100,1,100,processed_check/ml-latest-small/interactions.csv,processed_check/ml-latest-small/items.csv,max_rows_per_dataset=100
+ml-latest,100,2,97,processed_check/ml-latest/interactions.csv,processed_check/ml-latest/items.csv,max_rows_per_dataset=100
+ml-32m,100,1,100,processed_check/ml-32m/interactions.csv,processed_check/ml-32m/items.csv,max_rows_per_dataset=100
+ml_20mx16x32,100,1,100,processed_check/ml_20mx16x32/interactions.csv,processed_check/ml_20mx16x32/items.csv,max_rows_per_dataset=100
+genome_2021,100,1,100,processed_check/genome_2021/interactions.csv,processed_check/genome_2021/items.csv,max_rows_per_dataset=100
+amazon_review,100,99,7,processed_check/amazon_review/interactions.csv,processed_check/amazon_review/items.csv,max_rows_per_dataset=100
+fake_review_detection,100,100,53,processed_check/fake_review_detection/interactions.csv,processed_check/fake_review_detection/items.csv,max_rows_per_dataset=100
+market_bias,100,99,3,processed_check/market_bias/interactions.csv,processed_check/market_bias/items.csv,max_rows_per_dataset=100
+music_in_car,100,2,35,processed_check/music_in_car/interactions.csv,processed_check/music_in_car/items.csv,max_rows_per_dataset=100

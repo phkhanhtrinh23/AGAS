@@ -1,0 +1,11 @@
+dataset,item_id,title,genres,category,metadata_json,source
+market_bias,modcloth:i:6454,Modcloth Item 6454,Dresses,Dresses,"{""domain"": ""modcloth"", ""avg_rating"": 3.8181818181818183, ""brand"": ""ModCloth"", ""year"": 2017}",marketBias/data
+market_bias,modcloth:i:7443,Modcloth Item 7443,Dresses,Dresses,"{""domain"": ""modcloth"", ""avg_rating"": 3.772502472799209, ""brand"": null, ""year"": 2012}",marketBias/data
+market_bias,modcloth:i:11960,Modcloth Item 11960,Outerwear,Outerwear,"{""domain"": ""modcloth"", ""avg_rating"": 4.033957845433255, ""brand"": null, ""year"": 2010}",marketBias/data
+market_bias,modcloth:i:16411,Modcloth Item 16411,Dresses,Dresses,"{""domain"": ""modcloth"", ""avg_rating"": 3.668253968253968, ""brand"": null, ""year"": 2011}",marketBias/data
+market_bias,modcloth:i:21296,Modcloth Item 21296,Bottoms,Bottoms,"{""domain"": ""modcloth"", ""avg_rating"": 4.171760391198044, ""brand"": ""ModCloth"", ""year"": 2013}",marketBias/data
+market_bias,modcloth:i:22563,Modcloth Item 22563,Tops,Tops,"{""domain"": ""modcloth"", ""avg_rating"": 4.188118811881188, ""brand"": null, ""year"": 2014}",marketBias/data
+market_bias,modcloth:i:24853,Modcloth Item 24853,Tops,Tops,"{""domain"": ""modcloth"", ""avg_rating"": 4.032558139534884, ""brand"": null, ""year"": 2016}",marketBias/data
+market_bias,modcloth:i:27439,Modcloth Item 27439,Outerwear,Outerwear,"{""domain"": ""modcloth"", ""avg_rating"": 4.484455958549223, ""brand"": ""Steve Madden"", ""year"": 2018}",marketBias/data
+market_bias,modcloth:i:27590,Modcloth Item 27590,Bottoms,Bottoms,"{""domain"": ""modcloth"", ""avg_rating"": 4.23394495412844, ""brand"": null, ""year"": 2016}",marketBias/data
+market_bias,modcloth:i:28252,Modcloth Item 28252,Dresses,Dresses,"{""domain"": ""modcloth"", ""avg_rating"": 4.465909090909091, ""brand"": ""Retrolicious"", ""year"": 2015}",marketBias/data

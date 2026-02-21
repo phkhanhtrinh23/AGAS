@@ -1,0 +1,11 @@
+dataset,item_id,title,genres,category,metadata_json,source
+fake_review_detection,-pO0hsi0xlF4FwqLGJUizg,Restaurant -pO0hsi0xl,restaurant,restaurant,"{""avg_rating"": 3.5661764705882355, ""reviews"": 136, ""restaurant_rating"": 4.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,0-rkPnrTODt_veJ_nMVT_w,Restaurant 0-rkPnrTOD,restaurant,restaurant,"{""avg_rating"": 4.2894736842105265, ""reviews"": 114, ""restaurant_rating"": 4.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,08X_5WTOVNvk4SgPRKBjjQ,Restaurant 08X_5WTOVN,restaurant,restaurant,"{""avg_rating"": 3.4496644295302015, ""reviews"": 149, ""restaurant_rating"": 3.5}",fake-review-detection/new_data_train.csv
+fake_review_detection,0fFLUKl71vv3eNV2xhikEw,Restaurant 0fFLUKl71v,restaurant,restaurant,"{""avg_rating"": 3.9903846153846154, ""reviews"": 104, ""restaurant_rating"": 4.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,1QKqtC4vML3QhkrSzwR_tQ,Restaurant 1QKqtC4vML,restaurant,restaurant,"{""avg_rating"": 3.254385964912281, ""reviews"": 114, ""restaurant_rating"": 3.5}",fake-review-detection/new_data_train.csv
+fake_review_detection,1g52-6WzlhjIOpNAsBjPJg,Restaurant 1g52-6Wzlh,restaurant,restaurant,"{""avg_rating"": 4.161290322580645, ""reviews"": 93, ""restaurant_rating"": 4.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,1iehp7Z2kejBq3RSeb4Dxg,Restaurant 1iehp7Z2ke,restaurant,restaurant,"{""avg_rating"": 3.8703703703703702, ""reviews"": 108, ""restaurant_rating"": 3.5}",fake-review-detection/new_data_train.csv
+fake_review_detection,28gamO9SwWMHxwB0nP_plQ,Restaurant 28gamO9SwW,restaurant,restaurant,"{""avg_rating"": 3.742857142857143, ""reviews"": 70, ""restaurant_rating"": 4.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,2WoMT3wSpp9vxZeTv6u-cw,Restaurant 2WoMT3wSpp,restaurant,restaurant,"{""avg_rating"": 3.768292682926829, ""reviews"": 82, ""restaurant_rating"": 4.0}",fake-review-detection/new_data_train.csv
+fake_review_detection,3Mx2PM7v8qjqhgF3cDXxbQ,Restaurant 3Mx2PM7v8q,restaurant,restaurant,"{""avg_rating"": 3.8879310344827585, ""reviews"": 116, ""restaurant_rating"": 4.0}",fake-review-detection/new_data_train.csv

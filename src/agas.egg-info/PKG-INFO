@@ -1,0 +1,257 @@
+Metadata-Version: 2.4
+Name: agas
+Version: 0.1.0
+Summary: Agentic-empowered Group Shilling Attacks in Recommender Systems
+Author: AGAS Authors
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: numpy>=1.24
+Requires-Dist: pandas>=2.0
+Requires-Dist: scipy>=1.10
+Requires-Dist: scikit-learn>=1.3
+Requires-Dist: openpyxl>=3.1
+Requires-Dist: requests>=2.31
+Requires-Dist: PyYAML>=6.0
+Requires-Dist: tqdm>=4.66
+Requires-Dist: openai>=1.12
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-cov>=5.0; extra == "dev"
+
+# AGAS: Agentic-empowered Group Shilling Attacks in Recommender Systems
+
+This repository implements an end-to-end research framework for **AGAS** (Agentic-empowered Group Shilling Attacks in Recommender Systems), including:
+
+- canonical preprocessing for all datasets under `data/`
+- a lightweight surrogate recommender model
+- a multi-agent AGAS simulator with role switching and defense-aware feedback
+- optional LLM-based coordinator policy using **OpenAI** or **Ollama**
+
+This code is provided for academic simulation and defense research only.
+
+## 1. Project Structure
+
+```text
+.
+├── configs/
+│   └── default.yaml
+├── data/                         # Provided datasets
+├── scripts/
+│   ├── preprocess_all.py
+│   ├── train_surrogate.py
+│   └── run_agas.py
+├── src/agas/
+│   ├── agents/
+│   │   ├── coordinator.py
+│   │   ├── messages.py
+│   │   └── worker.py
+│   ├── data/
+│   │   ├── discovery.py
+│   │   ├── pipeline.py
+│   │   └── loaders/
+│   ├── llm/
+│   │   └── providers.py
+│   ├── recsys/
+│   │   ├── prepared_data.py
+│   │   └── surrogate.py
+│   ├── simulation/
+│   │   ├── environment.py
+│   │   └── episode.py
+│   └── cli.py
+├── tests/
+├── pyproject.toml
+└── README.md
+```
+
+## 2. Dataset Audit and Preprocessing Coverage
+
+### Documented folders read
+
+- `data/ml-latest-small/README.txt`
+- `data/ml-latest/README.txt`
+- `data/ml-32m/README.txt`
+- `data/ml-20mx16x32/ml-20mx16x32-README.txt`
+- `data/genome_2021/readme.txt`
+- `data/fake-review-detection/README.md`
+- `data/marketBias/README.md`
+
+### Undocumented folders sampled
+
+- `data/amazon_review/` (`rating-Alabama.csv`, `review-Alabama_10.json`)
+- `data/music_in_car/` (`Data_InCarMusic.xlsx`, all sheets)
+
+### Implemented adapters (`src/agas/data/loaders/`)
+
+- `movielens.py`: `ml-latest-small`, `ml-latest`, `ml-32m`
+- `ml20m_fractal.py`: `ml-20mx16x32`
+- `genome2021.py`: `genome_2021/raw/ratings.json` and metadata
+- `amazon_review.py`
+- `music_in_car.py`
+- `fake_review.py`
+- `market_bias.py`
+
+All adapters export a canonical format:
+
+- interactions: `dataset,user_id,item_id,rating,timestamp,split,context_json,source`
+- items: `dataset,item_id,title,genres,category,metadata_json,source`
+
+Outputs are written to `processed/<dataset>/interactions.csv` and `processed/<dataset>/items.csv`.
+
+## 3. Setup
+
+```bash
+python -m pip install -e .
+```
+
+## 4. Preprocess Data
+
+Run all available adapters:
+
+```bash
+agas preprocess --data-root data --output-root processed
+```
+
+Safe default is `--max-rows-per-dataset 2000000` to keep processing practical on large datasets.
+Use full export if needed:
+
+```bash
+agas preprocess --max-rows-per-dataset none
+```
+
+Preprocess selected datasets:
+
+```bash
+agas preprocess --datasets ml-latest-small,genome_2021,music_in_car
+```
+
+A summary table is written to `processed/summary.csv`.
+
+## 5. Surrogate Recommender
+
+Implemented in `src/agas/recsys/surrogate.py`:
+
+- lightweight matrix-factorization surrogate (`TruncatedSVD`)
+- item popularity + bias fallback for robustness
+- recommendation API: top-N item generation
+- ranking API: target rank within a segment
+- online update support (`append_interactions`) after attack actions
+
+Train and save a surrogate snapshot:
+
+```bash
+agas train-surrogate \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 500000 \
+  --output outputs/surrogate.pkl
+```
+
+## 6. AGAS System Design
+
+### Roles implemented
+
+- `Profiler`: probes recommender acceptance using popular benchmark items
+- `Camouflaguer`: builds trust in target-domain cluster and injects benign noise
+- `Inactive`: no action (temporal reset to reduce velocity anomalies)
+- `Sniper`: payload ratings (target max-score + competitor min-score)
+
+Worker logic is in `src/agas/agents/worker.py`.
+
+### Message protocol
+
+Implemented in `src/agas/agents/messages.py`:
+
+- `CoordinatorObservation`
+- `RoleAssignment`
+- `WorkerActionReport`
+- `RatingAction`
+- `ActionOutcome`
+- `EnvironmentFeedback`
+- generic envelope `ProtocolMessage`
+
+### Coordinator
+
+`src/agas/agents/coordinator.py` includes:
+
+- `RuleBasedCoordinatorPolicy`: follows the described AGAS timeline
+  - t=0 profiling
+  - t=1 infiltration
+  - t=2 snipe
+  - t>=3 evasion/adaptive rotation
+- `LLMCoordinatorPolicy`: optional LLM role assignment from structured state
+
+### Defense-aware environment
+
+`src/agas/simulation/environment.py` simulates:
+
+- stealth filtering / lockdown behavior
+- influence discounting on extreme low-trust ratings
+- spike detector alerts for synchronized max-ratings
+- trust/risk state transitions per agent
+- target ranking feedback loop
+
+## 7. Run AGAS Episode
+
+Rule-based coordinator:
+
+```bash
+agas run-episode \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --target-item-id 101 \
+  --target-keyword horror \
+  --num-agents 4 \
+  --num-steps 4 \
+  --coordinator-policy rule \
+  --output outputs/episode_result.json
+```
+
+### OpenAI coordinator mode
+
+```bash
+export OPENAI_API_KEY=YOUR_KEY
+agas run-episode \
+  --coordinator-policy openai \
+  --llm-model gpt-4o-mini
+```
+
+### Ollama coordinator mode
+
+Start Ollama locally (for example with `llama3.1`):
+
+```bash
+ollama serve
+ollama pull llama3.1
+```
+
+Then run:
+
+```bash
+agas run-episode \
+  --coordinator-policy ollama \
+  --llm-model llama3.1 \
+  --ollama-host http://localhost:11434
+```
+
+## 8. Reproducibility / Tests
+
+Run smoke tests:
+
+```bash
+pytest -q
+```
+
+Current test status in this environment: **4 passed**.
+
+## 9. Notes on Large Datasets
+
+Datasets like `ml-latest`, `ml-32m`, and `ml-20mx16x32` are very large.
+Use `--max-rows-per-dataset` / `--max-interactions` during iteration, then switch to full export for final experiments.
+
+## 10. Key Entry Points
+
+- CLI: `src/agas/cli.py`
+- preprocessing pipeline: `src/agas/data/pipeline.py`
+- surrogate model: `src/agas/recsys/surrogate.py`
+- AGAS policies: `src/agas/agents/coordinator.py`, `src/agas/agents/worker.py`
+- simulation runner: `src/agas/simulation/episode.py`

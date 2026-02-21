@@ -1,0 +1,3 @@
+dataset,interactions,unique_users,unique_items,interactions_path,items_path,notes
+fake_review_detection,10,10,8,processed_check2/fake_review_detection/interactions.csv,processed_check2/fake_review_detection/items.csv,max_rows_per_dataset=10
+market_bias,10,10,1,processed_check2/market_bias/interactions.csv,processed_check2/market_bias/items.csv,max_rows_per_dataset=10
