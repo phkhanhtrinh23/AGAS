@@ -21,6 +21,15 @@ from agas.simulation.episode import AGASEpisodeRunner, EpisodeConfig, default_ag
 
 
 def _parse_optional_int(raw: str | None) -> Optional[int]:
+    """Parse optional integer CLI values.
+
+    Args:
+        raw: Raw CLI argument value; may be numeric text or a null-like token.
+
+    Returns:
+        Parsed integer, or ``None`` when the value is ``none/null/all/full``.
+    """
+
     if raw is None:
         return None
     value = str(raw).strip().lower()
@@ -30,6 +39,17 @@ def _parse_optional_int(raw: str | None) -> Optional[int]:
 
 
 def _read_limited_csv(path: Path, max_rows: Optional[int] = None, chunksize: int = 200_000) -> pd.DataFrame:
+    """Read a CSV fully or stream up to ``max_rows`` rows in chunks.
+
+    Args:
+        path: CSV file path.
+        max_rows: Optional hard cap for number of loaded rows.
+        chunksize: Chunk size used when ``max_rows`` is provided.
+
+    Returns:
+        DataFrame containing loaded rows, possibly empty when ``max_rows`` is 0.
+    """
+
     if max_rows is None:
         return pd.read_csv(path)
 
@@ -52,6 +72,18 @@ def _fit_surrogate_from_processed(
     max_interactions: Optional[int] = None,
     n_factors: int = 32,
 ) -> tuple[LightweightSurrogateRecommender, pd.DataFrame, pd.DataFrame]:
+    """Load canonical files, clean core columns, and fit a surrogate recommender.
+
+    Args:
+        processed_root: Root directory containing preprocessed datasets.
+        dataset: Dataset folder name under ``processed_root``.
+        max_interactions: Optional cap on interactions used for fitting.
+        n_factors: Number of latent factors for the surrogate model.
+
+    Returns:
+        Tuple ``(model, interactions, items)`` after fitting.
+    """
+
     interactions_path = processed_root / dataset / "interactions.csv"
     items_path = processed_root / dataset / "items.csv"
     if not interactions_path.exists() or not items_path.exists():
@@ -74,6 +106,15 @@ def _fit_surrogate_from_processed(
 
 
 def cmd_preprocess(args: argparse.Namespace) -> int:
+    """CLI handler for preprocessing raw datasets into canonical CSV outputs.
+
+    Args:
+        args: Parsed command-line arguments for the ``preprocess`` subcommand.
+
+    Returns:
+        Process exit code.
+    """
+
     include = None
     if args.datasets:
         include = {d.strip() for d in args.datasets.split(",") if d.strip()}
@@ -99,6 +140,15 @@ def cmd_preprocess(args: argparse.Namespace) -> int:
 
 
 def cmd_train_surrogate(args: argparse.Namespace) -> int:
+    """CLI handler to fit and serialize a surrogate model pickle.
+
+    Args:
+        args: Parsed command-line arguments for ``train-surrogate``.
+
+    Returns:
+        Process exit code.
+    """
+
     model, interactions, items = _fit_surrogate_from_processed(
         processed_root=Path(args.processed_root),
         dataset=args.dataset,
@@ -121,6 +171,15 @@ def cmd_train_surrogate(args: argparse.Namespace) -> int:
 
 
 def cmd_run_episode(args: argparse.Namespace) -> int:
+    """CLI handler to run one AGAS episode and persist a full JSON trace.
+
+    Args:
+        args: Parsed command-line arguments for ``run-episode``.
+
+    Returns:
+        Process exit code.
+    """
+
     model, interactions, items = _fit_surrogate_from_processed(
         processed_root=Path(args.processed_root),
         dataset=args.dataset,
@@ -192,6 +251,8 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    """Build the top-level ``agas`` parser and all subcommands."""
+
     parser = argparse.ArgumentParser(prog="agas", description="AGAS framework CLI")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -242,6 +303,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> int:
+    """Entrypoint used by the console script in package metadata."""
+
     parser = build_parser()
     args = parser.parse_args()
     return args.func(args)

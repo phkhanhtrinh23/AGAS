@@ -52,6 +52,21 @@ class AGASEnvironment:
         target_item: Optional[str] = None,
         target_genre: Optional[str] = None,
     ):
+        """Initialize defense-aware simulation state from a fitted recommender and metadata.
+
+        Args:
+            recommender: Fitted surrogate recommender instance.
+            base_interactions: Baseline interactions table; defaults to model interactions.
+            items: Canonical item metadata table; defaults to recommender items.
+            target_item_id: Item ID to promote during the episode.
+            target_keyword: Keyword used to identify target-domain/cluster items.
+            defense_config: Optional defense heuristic configuration.
+            seed: Random seed for stochastic defense behavior.
+            model: Backward-compatible alias for ``recommender``.
+            target_item: Backward-compatible alias for ``target_item_id``.
+            target_genre: Backward-compatible alias for ``target_keyword``.
+        """
+
         if recommender is None:
             recommender = model
         if recommender is None:
@@ -102,6 +117,8 @@ class AGASEnvironment:
         self.current_rank, self.total_candidates = self._target_rank()
 
     def _resolve_target_cluster_items(self) -> list[str]:
+        """Select items in the target domain (genre/category keyword match)."""
+
         if "item_id" not in self.items.columns:
             return []
         if "genres" in self.items.columns:
@@ -117,6 +134,8 @@ class AGASEnvironment:
         return list(dict.fromkeys(cluster))
 
     def _resolve_benchmark_items(self) -> list[str]:
+        """Choose globally popular items used by profiler actions."""
+
         if self.recommender.interactions is None:
             return []
         popular = (
@@ -130,6 +149,8 @@ class AGASEnvironment:
         return popular
 
     def _resolve_noise_items(self) -> list[str]:
+        """Choose non-target items used for camouflage and desynchronization noise."""
+
         if "genres" not in self.items.columns:
             return self.benchmark_items[:100]
 
@@ -140,6 +161,8 @@ class AGASEnvironment:
         return candidates[:200]
 
     def _resolve_competitor_items(self) -> list[str]:
+        """Choose popular in-cluster non-target items for sniper downrating."""
+
         if self.recommender.interactions is None or not self.target_cluster_item_ids:
             return []
 
@@ -153,6 +176,8 @@ class AGASEnvironment:
         return [i for i in popular if i != self.target_item_id][:50]
 
     def _resolve_segment_users(self) -> list[str]:
+        """Identify users representing the target-audience segment for ranking evaluation."""
+
         if self.base_interactions.empty or not self.target_cluster_item_ids:
             return []
 
@@ -167,6 +192,8 @@ class AGASEnvironment:
         return users
 
     def _ensure_target_item_exists(self) -> None:
+        """Inject anchor interactions if target item is absent from historical data."""
+
         if self.recommender.interactions is None:
             return
 
@@ -181,6 +208,8 @@ class AGASEnvironment:
         self.recommender.append_interactions(anchors, refit=True)
 
     def _target_rank(self) -> tuple[int, int]:
+        """Compute current target rank within the target cluster candidate pool."""
+
         candidate = list(self.target_cluster_item_ids)
         if self.target_item_id not in candidate:
             candidate.append(self.target_item_id)
@@ -202,7 +231,15 @@ class AGASEnvironment:
         )
 
     def observation(self, step: int, worker_states: Dict[str, WorkerState]) -> CoordinatorObservation:
-        """Build observation message for coordinator."""
+        """Build observation message for coordinator.
+
+        Args:
+            step: Current episode step index.
+            worker_states: Current mutable worker state map keyed by agent ID.
+
+        Returns:
+            Coordinator observation payload for policy decision making.
+        """
 
         trust = {aid: float(st.trust) for aid, st in worker_states.items()}
         risk = {aid: float(st.risk) for aid, st in worker_states.items()}
@@ -223,7 +260,16 @@ class AGASEnvironment:
         reports: Iterable[WorkerActionReport],
         worker_states: Dict[str, WorkerState],
     ) -> EnvironmentFeedback:
-        """Apply worker actions, update defenses, and refit recommender."""
+        """Apply worker actions, update defenses, and refit recommender.
+
+        Args:
+            step: Current episode step index.
+            reports: Worker action reports produced for this step.
+            worker_states: Mutable worker states updated with trust/risk deltas.
+
+        Returns:
+            Environment feedback containing outcomes, alerts, and target rank.
+        """
 
         reports = list(reports)
         all_actions: List[RatingAction] = [a for r in reports for a in r.actions]
@@ -286,6 +332,16 @@ class AGASEnvironment:
         action: RatingAction,
         state: WorkerState,
     ) -> tuple[bool, Optional[float], float, float, str]:
+        """Apply influence discounting and lockdown logic to one worker action.
+
+        Returns a tuple of:
+        ``(accepted, effective_rating, trust_delta, risk_delta, reason)``.
+
+        Args:
+            action: Worker-issued rating action to evaluate.
+            state: Current mutable state for the action's worker.
+        """
+
         trust_delta = self.config.trust_gain_action
         risk_delta = 0.02
 

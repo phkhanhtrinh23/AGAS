@@ -22,6 +22,8 @@ class EpisodeConfig:
     n_workers: int | None = None
 
     def __post_init__(self) -> None:
+        """Hydrate canonical fields from backward-compatible alias arguments."""
+
         if self.n_steps is not None:
             self.num_steps = self.n_steps
         if self.n_workers is not None:
@@ -54,6 +56,16 @@ class AGASEpisodeRunner:
         workers: Dict[str, WorkerAgent] | None = None,
         config: EpisodeConfig | None = None,
     ):
+        """Bind coordinator, environment, workers, and episode settings.
+
+        Args:
+            coordinator: Coordinator object or policy object convertible to
+                ``Coordinator``.
+            environment: Simulation environment executing actions and defenses.
+            workers: Optional worker pool; defaults to newly created workers.
+            config: Optional episode configuration.
+        """
+
         if isinstance(coordinator, Coordinator):
             self.coordinator = coordinator
         else:
@@ -65,6 +77,8 @@ class AGASEpisodeRunner:
         self.workers = workers or build_worker_pool(default_agent_ids(self.config.num_workers))
 
     def run(self) -> EpisodeResult:
+        """Execute the full multi-step AGAS loop and return structured results."""
+
         history: List[dict] = []
 
         for step in range(self.config.num_steps):
@@ -113,6 +127,13 @@ class AGASEpisodeRunner:
 
 
 def default_agent_ids(n: int = 4) -> Sequence[str]:
-    """Standard worker id layout for AGAS experiments."""
+    """Standard worker ID layout for AGAS experiments.
+
+    Args:
+        n: Number of worker IDs to generate.
+
+    Returns:
+        List of IDs in the form ``agent_1``, ``agent_2``, ...
+    """
 
     return [f"agent_{i}" for i in range(1, n + 1)]

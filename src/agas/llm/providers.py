@@ -22,6 +22,15 @@ class LLMClient(Protocol):
     """Protocol for text generation backends."""
 
     def generate(self, request: LLMRequest) -> str:
+        """Generate one text completion from a normalized request payload.
+
+        Args:
+            request: Provider-agnostic generation request payload.
+
+        Returns:
+            Generated text response.
+        """
+
         ...
 
 
@@ -33,11 +42,22 @@ class OpenAIClient:
     api_key: str | None = None
 
     def __post_init__(self) -> None:
+        """Create the underlying OpenAI SDK client lazily after dataclass init."""
+
         from openai import OpenAI
 
         self._client = OpenAI(api_key=self.api_key)
 
     def generate(self, request: LLMRequest) -> str:
+        """Call the Responses API and normalize output into plain text.
+
+        Args:
+            request: Provider-agnostic generation request payload.
+
+        Returns:
+            Generated text extracted from OpenAI response content.
+        """
+
         response = self._client.responses.create(
             model=self.model,
             temperature=request.temperature,
@@ -69,6 +89,15 @@ class OllamaClient:
     timeout_seconds: int = 120
 
     def generate(self, request: LLMRequest) -> str:
+        """Call local Ollama ``/api/generate`` endpoint and return response text.
+
+        Args:
+            request: Provider-agnostic generation request payload.
+
+        Returns:
+            Generated text returned by Ollama.
+        """
+
         payload = {
             "model": self.model,
             "prompt": f"[SYSTEM]\n{request.system_prompt}\n\n[USER]\n{request.user_prompt}",
@@ -86,7 +115,17 @@ class OllamaClient:
 
 
 def build_llm_client(provider: str, model: str, api_key: str | None = None, host: str | None = None) -> LLMClient:
-    """Factory for LLM clients."""
+    """Factory for LLM clients.
+
+    Args:
+        provider: Backend name (``openai`` or ``ollama``).
+        model: Model identifier passed to the provider backend.
+        api_key: Optional OpenAI API key for ``openai`` provider.
+        host: Optional Ollama base URL for ``ollama`` provider.
+
+    Returns:
+        Configured LLM client implementation.
+    """
 
     provider = provider.lower().strip()
     if provider == "openai":

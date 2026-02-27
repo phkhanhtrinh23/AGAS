@@ -9,7 +9,15 @@ import pandas as pd
 
 
 def load_preprocessed_dataset(processed_root: Path, dataset: str) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Load interactions/items CSV files for one canonical dataset."""
+    """Load interactions/items CSV files for one canonical dataset.
+
+    Args:
+        processed_root: Root directory containing processed dataset folders.
+        dataset: Dataset folder name under ``processed_root``.
+
+    Returns:
+        Tuple ``(interactions, items)`` with normalized ID/rating dtypes.
+    """
 
     base = processed_root / dataset
     interactions = pd.read_csv(base / "interactions.csv")
@@ -23,7 +31,16 @@ def load_preprocessed_dataset(processed_root: Path, dataset: str) -> tuple[pd.Da
 
 
 def select_items_by_keyword(items: pd.DataFrame, keyword: str, column: str = "genres") -> list[str]:
-    """Return item IDs where ``column`` contains ``keyword`` (case-insensitive)."""
+    """Return item IDs where ``column`` contains ``keyword`` (case-insensitive).
+
+    Args:
+        items: Canonical items DataFrame.
+        keyword: Keyword to match in the selected text column.
+        column: Column to search (defaults to ``genres``).
+
+    Returns:
+        Matching item IDs as strings.
+    """
 
     key = keyword.lower().strip()
     mask = items[column].fillna("").astype(str).str.lower().str.contains(key)
@@ -31,7 +48,15 @@ def select_items_by_keyword(items: pd.DataFrame, keyword: str, column: str = "ge
 
 
 def filter_interactions_by_items(interactions: pd.DataFrame, item_ids: Iterable[str]) -> pd.DataFrame:
-    """Return interactions that involve the given item IDs."""
+    """Return interactions that involve the given item IDs.
+
+    Args:
+        interactions: Canonical interactions DataFrame.
+        item_ids: Iterable of item IDs to keep.
+
+    Returns:
+        Filtered copy of interactions containing only requested items.
+    """
 
     item_set = set(map(str, item_ids))
     return interactions.loc[interactions["item_id"].astype(str).isin(item_set)].copy()

@@ -19,6 +19,17 @@ class CoordinatorPolicy(Protocol):
         observation: CoordinatorObservation,
         worker_states: Dict[str, WorkerState],
     ) -> Dict[str, RoleAssignment]:
+        """Return per-agent role assignments for the current simulation step.
+
+        Args:
+            observation: Environment snapshot for the current step, including
+                rank, alerts, and trust/risk summaries.
+            worker_states: Mutable per-agent state map keyed by agent ID.
+
+        Returns:
+            A mapping from agent ID to the chosen role assignment.
+        """
+
         ...
 
 
@@ -33,6 +44,18 @@ class RuleBasedCoordinatorPolicy:
         observation: CoordinatorObservation,
         worker_states: Dict[str, WorkerState],
     ) -> Dict[str, RoleAssignment]:
+        """Apply a deterministic role schedule with alert-aware evasive fallback.
+
+        Args:
+            observation: Current environment snapshot used to choose the phase
+                of the attack policy and react to alerts.
+            worker_states: Per-agent trust/risk state used for tie-breaking in
+                late-stage decisions.
+
+        Returns:
+            A mapping from agent ID to role assignment for this step.
+        """
+
         if self.agent_order is None:
             self.agent_order = tuple(sorted(worker_states.keys()))
 
@@ -119,6 +142,17 @@ class LLMCoordinatorPolicy:
         observation: CoordinatorObservation,
         worker_states: Dict[str, WorkerState],
     ) -> Dict[str, RoleAssignment]:
+        """Request role assignments from an LLM and fall back on parse failure.
+
+        Args:
+            observation: Current environment state serialized into the LLM prompt.
+            worker_states: Per-agent states included in the prompt and fallback
+                logic if the LLM output cannot be parsed.
+
+        Returns:
+            A mapping from agent ID to role assignment for this step.
+        """
+
         prompt = self._build_prompt(observation, worker_states)
         response = self.client.generate(
             LLMRequest(
@@ -139,6 +173,16 @@ class LLMCoordinatorPolicy:
         return fallback.assign(observation, worker_states)
 
     def _build_prompt(self, observation: CoordinatorObservation, worker_states: Dict[str, WorkerState]) -> str:
+        """Serialize state into a compact JSON prompt for the LLM backend.
+
+        Args:
+            observation: Environment observation object for the current step.
+            worker_states: Current worker states keyed by agent ID.
+
+        Returns:
+            A JSON string containing coordinator context and objective.
+        """
+
         state_blob = {
             "observation": observation.to_dict(),
             "workers": {
@@ -155,6 +199,17 @@ class LLMCoordinatorPolicy:
         return json.dumps(state_blob, indent=2)
 
     def _parse_assignments(self, text: str, step: int) -> Dict[str, RoleAssignment]:
+        """Parse LLM output into ``RoleAssignment`` objects for known workers.
+
+        Args:
+            text: Raw model output expected to be a JSON object keyed by agent ID.
+            step: Current simulation step used in the generated assignments.
+
+        Returns:
+            A mapping from agent ID to parsed assignment. Returns an empty map
+            when JSON parsing fails.
+        """
+
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
@@ -180,6 +235,12 @@ class Coordinator:
     """Coordinator orchestrating role assignments each step."""
 
     def __init__(self, policy: CoordinatorPolicy):
+        """Store the selected assignment policy implementation.
+
+        Args:
+            policy: Coordinator strategy object that implements ``assign``.
+        """
+
         self.policy = policy
 
     def assign_roles(
@@ -187,4 +248,14 @@ class Coordinator:
         observation: CoordinatorObservation,
         worker_states: Dict[str, WorkerState],
     ) -> Dict[str, RoleAssignment]:
+        """Delegate role assignment to the configured policy.
+
+        Args:
+            observation: Environment state seen by the coordinator.
+            worker_states: Current per-agent mutable worker states.
+
+        Returns:
+            A mapping from agent ID to role assignment for the step.
+        """
+
         return self.policy.assign(observation, worker_states)

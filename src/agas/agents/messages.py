@@ -27,6 +27,8 @@ class ProtocolMessage:
     payload: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Any]:
+        """Convert dataclass payload into plain JSON-serializable dict."""
+
         return asdict(self)
 
 
@@ -40,6 +42,8 @@ class RatingAction:
     reason: str
 
     def to_dict(self) -> Dict[str, Any]:
+        """Return a dictionary representation for logging and transport."""
+
         return asdict(self)
 
 
@@ -58,6 +62,8 @@ class CoordinatorObservation:
     notes: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize the full observation for policy input or trace output."""
+
         return asdict(self)
 
 
@@ -71,6 +77,8 @@ class RoleAssignment:
     rationale: str
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize assignment while converting enum roles to wire-format strings."""
+
         data = asdict(self)
         data["role"] = self.role.value
         return data
@@ -87,6 +95,8 @@ class WorkerActionReport:
     notes: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize worker actions and metadata for history capture."""
+
         return {
             "step": self.step,
             "agent_id": self.agent_id,
@@ -108,6 +118,8 @@ class ActionOutcome:
     reason: str
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize environment decision for one rating action."""
+
         return {
             "action": self.action.to_dict(),
             "accepted": self.accepted,
@@ -130,6 +142,8 @@ class EnvironmentFeedback:
     notes: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
+        """Serialize full per-step environment feedback for the episode timeline."""
+
         return {
             "step": self.step,
             "outcomes": [o.to_dict() for o in self.outcomes],
