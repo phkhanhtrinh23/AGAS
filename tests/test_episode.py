@@ -1,3 +1,5 @@
+"""Smoke test for running a short AGAS episode with rule-based coordination."""
+
 from pathlib import Path
 
 from agas.agents.coordinator import RuleBasedCoordinatorPolicy
@@ -8,6 +10,8 @@ from agas.simulation.episode import AGASEpisodeRunner, EpisodeConfig
 
 
 def test_episode_runner_smoke(tmp_path: Path) -> None:
+    """Validate end-to-end episode execution and basic result shape invariants."""
+
     processed = tmp_path / "processed"
     preprocess_all_datasets(
         data_root=Path("data"),

@@ -1,9 +1,13 @@
+"""Smoke tests for full preprocessing pipeline execution and artifact creation."""
+
 from pathlib import Path
 
 from agas.data.pipeline import PreprocessConfig, preprocess_all
 
 
 def test_preprocess_smoke(tmp_path: Path) -> None:
+    """Ensure selected datasets preprocess successfully and produce summary artifacts."""
+
     cfg = PreprocessConfig(
         data_root=Path("data"),
         output_root=tmp_path / "processed",

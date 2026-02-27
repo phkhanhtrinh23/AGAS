@@ -1,3 +1,5 @@
+"""Tests for canonical preprocessing outputs and required schema columns."""
+
 from pathlib import Path
 
 import pandas as pd
@@ -6,6 +8,8 @@ from agas.data.pipeline import preprocess_all_datasets
 
 
 def test_preprocess_outputs_canonical_files(tmp_path: Path) -> None:
+    """Verify preprocessing exports expected datasets and canonical CSV columns."""
+
     out = tmp_path / "processed"
     stats = preprocess_all_datasets(
         data_root=Path("data"),

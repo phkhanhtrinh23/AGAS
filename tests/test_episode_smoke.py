@@ -1,3 +1,5 @@
+"""Integration smoke test for preprocessing, surrogate fitting, and AGAS loop."""
+
 from pathlib import Path
 
 from agas.agents.coordinator import Coordinator, RuleBasedCoordinatorPolicy
@@ -10,6 +12,8 @@ from agas.simulation.episode import AGASEpisodeRunner, EpisodeConfig, default_ag
 
 
 def test_episode_smoke(tmp_path: Path) -> None:
+    """Check that a 4-step episode completes and returns valid final rank metadata."""
+
     processed = tmp_path / "processed"
     preprocess_all(
         PreprocessConfig(
