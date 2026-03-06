@@ -1,9 +1,0 @@
-{
-  "dataset": "ml-latest-small",
-  "interactions": 5000,
-  "unique_users": 32,
-  "unique_items": 2427,
-  "interactions_path": "processed_smoke/ml-latest-small/interactions.csv",
-  "items_path": "processed_smoke/ml-latest-small/items.csv",
-  "notes": "max_rows_per_dataset=5000"
-}

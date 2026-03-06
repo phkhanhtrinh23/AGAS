@@ -1,9 +1,0 @@
-{
-  "dataset": "fake_review_detection",
-  "interactions": 10,
-  "unique_users": 10,
-  "unique_items": 8,
-  "interactions_path": "processed_check2/fake_review_detection/interactions.csv",
-  "items_path": "processed_check2/fake_review_detection/items.csv",
-  "notes": "max_rows_per_dataset=10"
-}

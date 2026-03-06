@@ -1,9 +1,0 @@
-{
-  "dataset": "genome_2021",
-  "interactions": 100,
-  "unique_users": 1,
-  "unique_items": 100,
-  "interactions_path": "processed_check/genome_2021/interactions.csv",
-  "items_path": "processed_check/genome_2021/items.csv",
-  "notes": "max_rows_per_dataset=100"
-}

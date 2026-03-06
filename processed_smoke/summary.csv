@@ -1,2 +1,0 @@
-dataset,interactions,unique_users,unique_items,interactions_path,items_path,notes
-ml-latest-small,5000,32,2427,processed_smoke/ml-latest-small/interactions.csv,processed_smoke/ml-latest-small/items.csv,max_rows_per_dataset=5000

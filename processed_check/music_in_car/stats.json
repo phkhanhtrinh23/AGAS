@@ -1,9 +1,0 @@
-{
-  "dataset": "music_in_car",
-  "interactions": 100,
-  "unique_users": 2,
-  "unique_items": 35,
-  "interactions_path": "processed_check/music_in_car/interactions.csv",
-  "items_path": "processed_check/music_in_car/items.csv",
-  "notes": "max_rows_per_dataset=100"
-}

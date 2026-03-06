@@ -1,9 +1,0 @@
-{
-  "dataset": "market_bias",
-  "interactions": 100,
-  "unique_users": 99,
-  "unique_items": 3,
-  "interactions_path": "processed_check/market_bias/interactions.csv",
-  "items_path": "processed_check/market_bias/items.csv",
-  "notes": "max_rows_per_dataset=100"
-}
