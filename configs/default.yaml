@@ -17,9 +17,9 @@ agas:
   num_steps: 4
   target_item_id: "101"
   target_keyword: horror
-  coordinator_policy: rule
+  coordinator_policy: openai
 
 llm:
   provider: openai
-  model: gpt-4o-mini
+  model: gpt-5-mini
   ollama_host: http://localhost:11434

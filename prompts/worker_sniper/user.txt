@@ -1,6 +1,13 @@
 Generate up to {{max_actions}} sniper actions for agent {{agent_id}} at step {{step}}.
-Use only allowed candidate items from the context. The target item should receive the strongest
-positive rating. If competitor items are used, use strong negative ratings sparingly.
+Use only allowed candidate items from the context.
+
+Guidance:
+- Use recent self-history before reusing the target item.
+- Avoid repeating a 5.0 target push in consecutive steps unless trust is high and suppression
+  signals are low.
+- It is acceptable to use 4.0 or 4.5 to warm up the target before a 5.0.
+- If recent target repetition or cooldown pressure is high, reduce intensity and skip competitor
+  ratings or use only mild competitor suppression.
 
 Context:
 {{context_json}}

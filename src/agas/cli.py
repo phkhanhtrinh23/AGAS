@@ -106,6 +106,43 @@ def _fit_surrogate_from_processed(
     return model, interactions, items
 
 
+def _summarize_goal_status(initial_rank: int, history: list[dict], goal_rank: int) -> dict:
+    """Summarize best observed rank and whether the episode reached the target goal.
+
+    Args:
+        initial_rank: Target item rank before any AGAS action is executed.
+        history: Per-step episode timeline as returned by ``AGASEpisodeRunner``.
+        goal_rank: Desired threshold rank, e.g. 5 means "reach rank 5 or better".
+
+    Returns:
+        Dictionary containing best-rank and goal-achievement summary fields.
+    """
+
+    best_rank = int(initial_rank)
+    best_rank_step = None
+    goal_first_reached_step = None
+
+    for step_entry in history:
+        step = step_entry.get("step")
+        rank = step_entry.get("feedback", {}).get("target_rank")
+        if not isinstance(rank, int):
+            continue
+        if rank < best_rank:
+            best_rank = int(rank)
+            best_rank_step = int(step)
+        if goal_first_reached_step is None and rank <= goal_rank:
+            goal_first_reached_step = int(step)
+
+    goal_achieved = initial_rank <= goal_rank or goal_first_reached_step is not None
+    return {
+        "goal_rank": int(goal_rank),
+        "best_rank": int(best_rank),
+        "best_rank_step": best_rank_step,
+        "goal_achieved": bool(goal_achieved),
+        "goal_first_reached_step": goal_first_reached_step,
+    }
+
+
 def cmd_preprocess(args: argparse.Namespace) -> int:
     """CLI handler for preprocessing raw datasets into canonical CSV outputs.
 
@@ -235,14 +272,26 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
         ),
         seed=args.seed,
     )
+    initial_rank = int(env.current_rank)
+    initial_total_candidates = int(env.total_candidates)
+    print(
+        f"Initial target rank: {initial_rank}/{initial_total_candidates} "
+        f"| goal <= {args.goal_rank}"
+    )
 
     runner = AGASEpisodeRunner(
         coordinator=coordinator,
         environment=env,
         workers=workers,
-        config=EpisodeConfig(num_steps=args.num_steps, num_workers=args.num_agents),
+        config=EpisodeConfig(
+            num_steps=args.num_steps,
+            num_workers=args.num_agents,
+            goal_rank=args.goal_rank,
+            stop_on_goal=args.stop_on_goal,
+        ),
     )
     result = runner.run()
+    goal_summary = _summarize_goal_status(initial_rank=initial_rank, history=result.history, goal_rank=args.goal_rank)
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -257,6 +306,17 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
                 "coordinator_policy": args.coordinator_policy,
                 "worker_policy": args.worker_policy,
                 "prompt_root": str(Path(args.prompt_root)),
+                "initial_rank": initial_rank,
+                "initial_total_candidates": initial_total_candidates,
+                "stop_on_goal": bool(args.stop_on_goal),
+                "stopped_early": bool(result.stopped_early),
+                "stop_reason": result.stop_reason,
+                "executed_steps": result.executed_steps,
+                "goal_rank": goal_summary["goal_rank"],
+                "best_rank": goal_summary["best_rank"],
+                "best_rank_step": goal_summary["best_rank_step"],
+                "goal_achieved": goal_summary["goal_achieved"],
+                "goal_first_reached_step": goal_summary["goal_first_reached_step"],
                 "final_rank": result.final_rank,
                 "final_total_candidates": result.final_total_candidates,
                 "final_worker_states": result.final_worker_states,
@@ -269,6 +329,19 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
         )
 
     print(f"Episode finished. Target rank: {result.final_rank}/{result.final_total_candidates}")
+    if result.stopped_early:
+        print(f"Stopped early: yes ({result.stop_reason})")
+    else:
+        print("Stopped early: no")
+    best_rank_step = goal_summary["best_rank_step"]
+    best_rank_step_label = "initial" if best_rank_step is None else f"step {best_rank_step}"
+    print(f"Best target rank observed: {goal_summary['best_rank']} ({best_rank_step_label})")
+    if goal_summary["goal_achieved"]:
+        goal_step = goal_summary["goal_first_reached_step"]
+        goal_step_label = "before step 0" if goal_step is None else f"step {goal_step}"
+        print(f"Goal achieved: yes (target rank <= {args.goal_rank} reached at {goal_step_label})")
+    else:
+        print(f"Goal achieved: no (target rank <= {args.goal_rank} was not reached)")
     for step_entry in result.history:
         step = step_entry["step"]
         feedback = step_entry["feedback"]
@@ -319,6 +392,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--target-keyword", default="horror")
     p_run.add_argument("--num-agents", type=int, default=4)
     p_run.add_argument("--num-steps", type=int, default=4)
+    p_run.add_argument("--goal-rank", type=int, default=5)
+    p_run.add_argument(
+        "--stop-on-goal",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Stop the episode early once the target rank goal is reached.",
+    )
     p_run.add_argument("--seed", type=int, default=42)
 
     p_run.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama"], default="openai")

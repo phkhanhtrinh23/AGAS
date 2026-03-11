@@ -1,0 +1,847 @@
+{
+  "dataset": "ml-latest-small",
+  "target_item_id": "101",
+  "target_keyword": "horror",
+  "num_steps": 4,
+  "num_agents": 4,
+  "coordinator_policy": "rule",
+  "final_rank": 2,
+  "final_total_candidates": 161,
+  "final_worker_states": {
+    "agent_1": {
+      "trust": 1.5000000000000004,
+      "risk": 2.7420640744779834,
+      "actions_taken": 10,
+      "role_history": [
+        "profiler",
+        "profiler",
+        "camouflaguer",
+        "camouflaguer"
+      ]
+    },
+    "agent_2": {
+      "trust": 1.6999999999999997,
+      "risk": 2.677254747151709,
+      "actions_taken": 7,
+      "role_history": [
+        "inactive",
+        "camouflaguer",
+        "sniper",
+        "camouflaguer"
+      ]
+    },
+    "agent_3": {
+      "trust": 1.25,
+      "risk": 1.974509494303418,
+      "actions_taken": 5,
+      "role_history": [
+        "inactive",
+        "camouflaguer",
+        "sniper",
+        "inactive"
+      ]
+    },
+    "agent_4": {
+      "trust": 0.0,
+      "risk": 0.0,
+      "actions_taken": 0,
+      "role_history": [
+        "inactive",
+        "inactive",
+        "inactive",
+        "inactive"
+      ]
+    }
+  },
+  "history": [
+    {
+      "step": 0,
+      "observation": {
+        "step": 0,
+        "target_item_id": "101",
+        "target_rank": 6,
+        "total_candidates": 155,
+        "alerts_by_agent": {},
+        "trust_by_agent": {
+          "agent_1": 0.0,
+          "agent_2": 0.0,
+          "agent_3": 0.0,
+          "agent_4": 0.0
+        },
+        "risk_by_agent": {
+          "agent_1": 0.0,
+          "agent_2": 0.0,
+          "agent_3": 0.0,
+          "agent_4": 0.0
+        },
+        "lockdown_active": false,
+        "notes": null
+      },
+      "assignments": {
+        "agent_1": {
+          "step": 0,
+          "agent_id": "agent_1",
+          "role": "profiler",
+          "rationale": "Probe if recommender is accepting new ratings without triggering bans."
+        },
+        "agent_2": {
+          "step": 0,
+          "agent_id": "agent_2",
+          "role": "inactive",
+          "rationale": "Default temporal reset to minimize velocity anomaly risk."
+        },
+        "agent_3": {
+          "step": 0,
+          "agent_id": "agent_3",
+          "role": "inactive",
+          "rationale": "Default temporal reset to minimize velocity anomaly risk."
+        },
+        "agent_4": {
+          "step": 0,
+          "agent_id": "agent_4",
+          "role": "inactive",
+          "rationale": "Default temporal reset to minimize velocity anomaly risk."
+        }
+      },
+      "reports": [
+        {
+          "step": 0,
+          "agent_id": "agent_1",
+          "role": "profiler",
+          "actions": [
+            {
+              "agent_id": "agent_1",
+              "item_id": "99114",
+              "rating": 5.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            {
+              "agent_id": "agent_1",
+              "item_id": "589",
+              "rating": 5.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            {
+              "agent_id": "agent_1",
+              "item_id": "466",
+              "rating": 4.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            }
+          ],
+          "notes": "Probe if recommender is accepting new ratings without triggering bans."
+        },
+        {
+          "step": 0,
+          "agent_id": "agent_2",
+          "role": "inactive",
+          "actions": [],
+          "notes": null
+        },
+        {
+          "step": 0,
+          "agent_id": "agent_3",
+          "role": "inactive",
+          "actions": [],
+          "notes": null
+        },
+        {
+          "step": 0,
+          "agent_id": "agent_4",
+          "role": "inactive",
+          "actions": [],
+          "notes": null
+        }
+      ],
+      "feedback": {
+        "step": 0,
+        "outcomes": [
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "99114",
+              "rating": 5.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            "accepted": true,
+            "effective_rating": 3.4699999999999998,
+            "trust_delta": 0.1,
+            "risk_delta": 0.715,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "589",
+              "rating": 5.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            "accepted": true,
+            "effective_rating": 5.0,
+            "trust_delta": 0.1,
+            "risk_delta": 0.12000000000000001,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "466",
+              "rating": 4.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            "accepted": true,
+            "effective_rating": 4.0,
+            "trust_delta": 0.35,
+            "risk_delta": 0.02,
+            "reason": "Accepted"
+          }
+        ],
+        "alerts_by_agent": {},
+        "target_rank": 9,
+        "total_candidates": 155,
+        "notes": "Normal filtering"
+      }
+    },
+    {
+      "step": 1,
+      "observation": {
+        "step": 1,
+        "target_item_id": "101",
+        "target_rank": 9,
+        "total_candidates": 155,
+        "alerts_by_agent": {},
+        "trust_by_agent": {
+          "agent_1": 0.55,
+          "agent_2": 0.0,
+          "agent_3": 0.0,
+          "agent_4": 0.0
+        },
+        "risk_by_agent": {
+          "agent_1": 0.855,
+          "agent_2": 0.0,
+          "agent_3": 0.0,
+          "agent_4": 0.0
+        },
+        "lockdown_active": false,
+        "notes": null
+      },
+      "assignments": {
+        "agent_1": {
+          "step": 1,
+          "agent_id": "agent_1",
+          "role": "profiler",
+          "rationale": "Continue profiling while trust bank is built."
+        },
+        "agent_2": {
+          "step": 1,
+          "agent_id": "agent_2",
+          "role": "camouflaguer",
+          "rationale": "Build target-domain trust embedding before payload delivery."
+        },
+        "agent_3": {
+          "step": 1,
+          "agent_id": "agent_3",
+          "role": "camouflaguer",
+          "rationale": "Build target-domain trust embedding before payload delivery."
+        },
+        "agent_4": {
+          "step": 1,
+          "agent_id": "agent_4",
+          "role": "inactive",
+          "rationale": "Default temporal reset to minimize velocity anomaly risk."
+        }
+      },
+      "reports": [
+        {
+          "step": 1,
+          "agent_id": "agent_1",
+          "role": "profiler",
+          "actions": [
+            {
+              "agent_id": "agent_1",
+              "item_id": "99114",
+              "rating": 5.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            {
+              "agent_id": "agent_1",
+              "item_id": "588",
+              "rating": 4.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            {
+              "agent_id": "agent_1",
+              "item_id": "661",
+              "rating": 5.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            }
+          ],
+          "notes": "Continue profiling while trust bank is built."
+        },
+        {
+          "step": 1,
+          "agent_id": "agent_2",
+          "role": "camouflaguer",
+          "actions": [
+            {
+              "agent_id": "agent_2",
+              "item_id": "3832",
+              "rating": 4.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            {
+              "agent_id": "agent_2",
+              "item_id": "2789",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            }
+          ],
+          "notes": "Build target-domain trust embedding before payload delivery."
+        },
+        {
+          "step": 1,
+          "agent_id": "agent_3",
+          "role": "camouflaguer",
+          "actions": [
+            {
+              "agent_id": "agent_3",
+              "item_id": "1995",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            {
+              "agent_id": "agent_3",
+              "item_id": "7492",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            }
+          ],
+          "notes": "Build target-domain trust embedding before payload delivery."
+        },
+        {
+          "step": 1,
+          "agent_id": "agent_4",
+          "role": "inactive",
+          "actions": [],
+          "notes": null
+        }
+      ],
+      "feedback": {
+        "step": 1,
+        "outcomes": [
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "99114",
+              "rating": 5.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            "accepted": true,
+            "effective_rating": 4.094513888888889,
+            "trust_delta": 0.1,
+            "risk_delta": 0.7050833333333334,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "588",
+              "rating": 4.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            "accepted": true,
+            "effective_rating": 4.0,
+            "trust_delta": 0.35,
+            "risk_delta": 0.02,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "661",
+              "rating": 5.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            "accepted": true,
+            "effective_rating": 5.0,
+            "trust_delta": 0.1,
+            "risk_delta": 0.12000000000000001,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_2",
+              "item_id": "3832",
+              "rating": 4.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            "accepted": true,
+            "effective_rating": 4.0,
+            "trust_delta": 0.35,
+            "risk_delta": 0.02,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_2",
+              "item_id": "2789",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            "accepted": true,
+            "effective_rating": 3.8621034879072558,
+            "trust_delta": 0.1,
+            "risk_delta": 0.6822547471517089,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_3",
+              "item_id": "1995",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            "accepted": true,
+            "effective_rating": 3.5542020787527484,
+            "trust_delta": 0.1,
+            "risk_delta": 0.6822547471517089,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_3",
+              "item_id": "7492",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            "accepted": true,
+            "effective_rating": 3.5542020787527484,
+            "trust_delta": 0.1,
+            "risk_delta": 0.6822547471517089,
+            "reason": "Accepted"
+          }
+        ],
+        "alerts_by_agent": {},
+        "target_rank": 7,
+        "total_candidates": 159,
+        "notes": "Normal filtering"
+      }
+    },
+    {
+      "step": 2,
+      "observation": {
+        "step": 2,
+        "target_item_id": "101",
+        "target_rank": 7,
+        "total_candidates": 159,
+        "alerts_by_agent": {},
+        "trust_by_agent": {
+          "agent_1": 1.1,
+          "agent_2": 0.44999999999999996,
+          "agent_3": 0.2,
+          "agent_4": 0.0
+        },
+        "risk_by_agent": {
+          "agent_1": 1.7000833333333336,
+          "agent_2": 0.7022547471517089,
+          "agent_3": 1.3645094943034177,
+          "agent_4": 0.0
+        },
+        "lockdown_active": false,
+        "notes": null
+      },
+      "assignments": {
+        "agent_1": {
+          "step": 2,
+          "agent_id": "agent_1",
+          "role": "camouflaguer",
+          "rationale": "Generate benign background activity as timing noise."
+        },
+        "agent_2": {
+          "step": 2,
+          "agent_id": "agent_2",
+          "role": "sniper",
+          "rationale": "Deliver synchronized payload after camouflage warm-up."
+        },
+        "agent_3": {
+          "step": 2,
+          "agent_id": "agent_3",
+          "role": "sniper",
+          "rationale": "Deliver synchronized payload after camouflage warm-up."
+        },
+        "agent_4": {
+          "step": 2,
+          "agent_id": "agent_4",
+          "role": "inactive",
+          "rationale": "Default temporal reset to minimize velocity anomaly risk."
+        }
+      },
+      "reports": [
+        {
+          "step": 2,
+          "agent_id": "agent_1",
+          "role": "camouflaguer",
+          "actions": [
+            {
+              "agent_id": "agent_1",
+              "item_id": "6395",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            {
+              "agent_id": "agent_1",
+              "item_id": "3355",
+              "rating": 4.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            }
+          ],
+          "notes": "Generate benign background activity as timing noise."
+        },
+        {
+          "step": 2,
+          "agent_id": "agent_2",
+          "role": "sniper",
+          "actions": [
+            {
+              "agent_id": "agent_2",
+              "item_id": "101",
+              "rating": 5.0,
+              "reason": "Sniper payload promotes target item with maximum score."
+            },
+            {
+              "agent_id": "agent_2",
+              "item_id": "842",
+              "rating": 1.0,
+              "reason": "Sniper payload demotes close competitors in target cluster."
+            },
+            {
+              "agent_id": "agent_2",
+              "item_id": "3300",
+              "rating": 1.0,
+              "reason": "Sniper payload demotes close competitors in target cluster."
+            }
+          ],
+          "notes": "Deliver synchronized payload after camouflage warm-up."
+        },
+        {
+          "step": 2,
+          "agent_id": "agent_3",
+          "role": "sniper",
+          "actions": [
+            {
+              "agent_id": "agent_3",
+              "item_id": "101",
+              "rating": 5.0,
+              "reason": "Sniper payload promotes target item with maximum score."
+            },
+            {
+              "agent_id": "agent_3",
+              "item_id": "273",
+              "rating": 1.0,
+              "reason": "Sniper payload demotes close competitors in target cluster."
+            },
+            {
+              "agent_id": "agent_3",
+              "item_id": "2338",
+              "rating": 1.0,
+              "reason": "Sniper payload demotes close competitors in target cluster."
+            }
+          ],
+          "notes": "Deliver synchronized payload after camouflage warm-up."
+        },
+        {
+          "step": 2,
+          "agent_id": "agent_4",
+          "role": "inactive",
+          "actions": [],
+          "notes": null
+        }
+      ],
+      "feedback": {
+        "step": 2,
+        "outcomes": [
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "6395",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            "accepted": true,
+            "effective_rating": 4.866195061632227,
+            "trust_delta": 0.1,
+            "risk_delta": 0.6819807411446495,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "3355",
+              "rating": 4.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            "accepted": true,
+            "effective_rating": 4.0,
+            "trust_delta": 0.1,
+            "risk_delta": 0.12000000000000001,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_2",
+              "item_id": "101",
+              "rating": 5.0,
+              "reason": "Sniper payload promotes target item with maximum score."
+            },
+            "accepted": true,
+            "effective_rating": 5.0,
+            "trust_delta": 0.35,
+            "risk_delta": 0.02,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_2",
+              "item_id": "842",
+              "rating": 1.0,
+              "reason": "Sniper payload demotes close competitors in target cluster."
+            },
+            "accepted": true,
+            "effective_rating": 1.0,
+            "trust_delta": 0.1,
+            "risk_delta": 0.12000000000000001,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_2",
+              "item_id": "3300",
+              "rating": 1.0,
+              "reason": "Sniper payload demotes close competitors in target cluster."
+            },
+            "accepted": true,
+            "effective_rating": 1.625,
+            "trust_delta": 0.1,
+            "risk_delta": 0.995,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_3",
+              "item_id": "101",
+              "rating": 5.0,
+              "reason": "Sniper payload promotes target item with maximum score."
+            },
+            "accepted": true,
+            "effective_rating": 5.0,
+            "trust_delta": 0.35,
+            "risk_delta": 0.02,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_3",
+              "item_id": "273",
+              "rating": 1.0,
+              "reason": "Sniper payload demotes close competitors in target cluster."
+            },
+            "accepted": true,
+            "effective_rating": 1.0,
+            "trust_delta": 0.35,
+            "risk_delta": 0.02,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_3",
+              "item_id": "2338",
+              "rating": 1.0,
+              "reason": "Sniper payload demotes close competitors in target cluster."
+            },
+            "accepted": true,
+            "effective_rating": 1.0,
+            "trust_delta": 0.35,
+            "risk_delta": 0.02,
+            "reason": "Accepted"
+          }
+        ],
+        "alerts_by_agent": {
+          "agent_2": "sudden_spike_detector",
+          "agent_3": "sudden_spike_detector"
+        },
+        "target_rank": 2,
+        "total_candidates": 160,
+        "notes": "Lockdown active"
+      }
+    },
+    {
+      "step": 3,
+      "observation": {
+        "step": 3,
+        "target_item_id": "101",
+        "target_rank": 2,
+        "total_candidates": 160,
+        "alerts_by_agent": {
+          "agent_2": "sudden_spike_detector",
+          "agent_3": "sudden_spike_detector"
+        },
+        "trust_by_agent": {
+          "agent_1": 1.3000000000000003,
+          "agent_2": 0.9999999999999999,
+          "agent_3": 1.25,
+          "agent_4": 0.0
+        },
+        "risk_by_agent": {
+          "agent_1": 2.502064074477983,
+          "agent_2": 2.637254747151709,
+          "agent_3": 2.224509494303418,
+          "agent_4": 0.0
+        },
+        "lockdown_active": true,
+        "notes": null
+      },
+      "assignments": {
+        "agent_1": {
+          "step": 3,
+          "agent_id": "agent_1",
+          "role": "camouflaguer",
+          "rationale": "Rotate fresh camouflaguer to continue trust accumulation."
+        },
+        "agent_2": {
+          "step": 3,
+          "agent_id": "agent_2",
+          "role": "camouflaguer",
+          "rationale": "Cool down suspicious profile with normal domain behavior."
+        },
+        "agent_3": {
+          "step": 3,
+          "agent_id": "agent_3",
+          "role": "inactive",
+          "rationale": "Temporary dormancy to drop velocity/risk scores."
+        },
+        "agent_4": {
+          "step": 3,
+          "agent_id": "agent_4",
+          "role": "inactive",
+          "rationale": "Default temporal reset to minimize velocity anomaly risk."
+        }
+      },
+      "reports": [
+        {
+          "step": 3,
+          "agent_id": "agent_1",
+          "role": "camouflaguer",
+          "actions": [
+            {
+              "agent_id": "agent_1",
+              "item_id": "38",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            {
+              "agent_id": "agent_1",
+              "item_id": "5755",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            }
+          ],
+          "notes": "Rotate fresh camouflaguer to continue trust accumulation."
+        },
+        {
+          "step": 3,
+          "agent_id": "agent_2",
+          "role": "camouflaguer",
+          "actions": [
+            {
+              "agent_id": "agent_2",
+              "item_id": "799",
+              "rating": 3.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            {
+              "agent_id": "agent_2",
+              "item_id": "18",
+              "rating": 3.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            }
+          ],
+          "notes": "Cool down suspicious profile with normal domain behavior."
+        },
+        {
+          "step": 3,
+          "agent_id": "agent_3",
+          "role": "inactive",
+          "actions": [],
+          "notes": null
+        },
+        {
+          "step": 3,
+          "agent_id": "agent_4",
+          "role": "inactive",
+          "actions": [],
+          "notes": null
+        }
+      ],
+      "feedback": {
+        "step": 3,
+        "outcomes": [
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "38",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            "accepted": true,
+            "effective_rating": 5.0,
+            "trust_delta": 0.1,
+            "risk_delta": 0.12000000000000001,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "5755",
+              "rating": 5.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            "accepted": true,
+            "effective_rating": 5.0,
+            "trust_delta": 0.1,
+            "risk_delta": 0.12000000000000001,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_2",
+              "item_id": "799",
+              "rating": 3.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            "accepted": true,
+            "effective_rating": 3.0,
+            "trust_delta": 0.35,
+            "risk_delta": 0.02,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_2",
+              "item_id": "18",
+              "rating": 3.0,
+              "reason": "Camouflaguer blends into trusted target-domain cluster."
+            },
+            "accepted": true,
+            "effective_rating": 3.0,
+            "trust_delta": 0.35,
+            "risk_delta": 0.02,
+            "reason": "Accepted"
+          }
+        ],
+        "alerts_by_agent": {},
+        "target_rank": 2,
+        "total_candidates": 161,
+        "notes": "Lockdown active"
+      }
+    }
+  ]
+}

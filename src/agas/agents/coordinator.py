@@ -57,6 +57,39 @@ class RuleBasedCoordinatorPolicy:
             return 0.0
         return float(signal.get("suspected_filtering_score", 0.0))
 
+    @staticmethod
+    def _agent_signal(observation: CoordinatorObservation, agent_id: str) -> Dict[str, Any]:
+        """Return the public black-box signal dictionary for one worker."""
+
+        signal = observation.signals_by_agent.get(agent_id, {})
+        return signal if isinstance(signal, dict) else {}
+
+    @classmethod
+    def _sniper_score(
+        cls,
+        observation: CoordinatorObservation,
+        worker_states: Dict[str, WorkerState],
+        agent_id: str,
+    ) -> float:
+        """Score how suitable a worker is for the next sniper action.
+
+        Args:
+            observation: Current black-box observation.
+            worker_states: Mutable worker states keyed by agent ID.
+            agent_id: Worker to score.
+
+        Returns:
+            Scalar score where higher values indicate a better sniper candidate.
+        """
+
+        signal = cls._agent_signal(observation, agent_id)
+        trust_risk = float(worker_states[agent_id].trust - worker_states[agent_id].risk)
+        suspicion = float(signal.get("suspected_filtering_score", 0.0))
+        repeat_pressure = float(signal.get("repeated_target_pressure", 0.0))
+        cooldown_remaining = int(signal.get("target_cooldown_remaining", 0))
+        target_actions = int(signal.get("recent_target_actions", 0))
+        return trust_risk - (1.4 * suspicion) - (1.2 * repeat_pressure) - (0.8 * cooldown_remaining) - (0.15 * target_actions)
+
     def assign(
         self,
         observation: CoordinatorObservation,
@@ -137,17 +170,37 @@ class RuleBasedCoordinatorPolicy:
                     break
             return assignments
 
-        trusted = sorted(
+        sniper_candidates = []
+        for aid in self.agent_order:
+            signal = self._agent_signal(observation, aid)
+            suspicion = float(signal.get("suspected_filtering_score", 0.0))
+            repeat_pressure = float(signal.get("repeated_target_pressure", 0.0))
+            cooldown_remaining = int(signal.get("target_cooldown_remaining", 0))
+            if suspicion >= 0.55 or repeat_pressure >= 0.55 or cooldown_remaining > 0:
+                continue
+            sniper_candidates.append(aid)
+
+        ranked = sorted(
             self.agent_order,
-            key=lambda aid: worker_states[aid].trust - worker_states[aid].risk,
+            key=lambda aid: self._sniper_score(observation, worker_states, aid),
             reverse=True,
         )
-        if trusted:
-            assignments[trusted[0]].role = AgentRole.SNIPER
-            assignments[trusted[0]].rationale = "Use highest-trust profile for targeted push."
-        for aid in trusted[1:3]:
+
+        if sniper_candidates and observation.target_rank > 5:
+            best = max(sniper_candidates, key=lambda aid: self._sniper_score(observation, worker_states, aid))
+            assignments[best].role = AgentRole.SNIPER
+            assignments[best].rationale = "Rotate to the least-suppressed trusted profile for the next payload step."
+
+        support_pool = [aid for aid in ranked if assignments[aid].role == AgentRole.INACTIVE]
+        if not sniper_candidates and observation.target_rank_delta <= 1:
+            if support_pool:
+                assignments[support_pool[0]].role = AgentRole.PROFILER
+                assignments[support_pool[0]].rationale = "Probe integration again while sniper cooldown pressure remains high."
+                support_pool = support_pool[1:]
+
+        for aid in support_pool[:3]:
             assignments[aid].role = AgentRole.CAMOUFLAGEUR
-            assignments[aid].rationale = "Support trust camouflage and cluster alignment."
+            assignments[aid].rationale = "Support trust camouflage, cooldown recovery, and cluster alignment."
 
         return assignments
 
@@ -187,28 +240,46 @@ class LLMCoordinatorPolicy:
             key="coordinator",
             default_system=(
                 "You are a coordinator for an AGAS simulation. Use only black-box response signals, worker "
-                "trust/risk, and target-rank movement to assign roles. Output strictly valid JSON with keys as "
-                "agent ids and values in {profiler, camouflaguer, sniper, inactive}."
+                "trust/risk, recent target repetition pressure, cooldown hints, and target-rank movement to "
+                "assign roles. Rotate snipers when repeated target pressure rises. Output strictly valid JSON "
+                "with keys as agent ids and values in {profiler, camouflaguer, sniper, inactive}."
             ),
             default_user=(
                 "Assign one role to each agent using the black-box observation below.\n"
-                "Prefer stealth when filtering suspicion is high.\n"
+                "Prefer stealth when filtering suspicion is high. Avoid reusing the same sniper when recent "
+                "target repetition or cooldown pressure is visible.\n"
                 "Context:\n{{context_json}}"
             ),
         )
         user_prompt = bundle.render_user({"context_json": prompt})
-        response = self.client.generate(
-            LLMRequest(
-                system_prompt=bundle.system_prompt,
-                user_prompt=user_prompt,
-                temperature=0.1,
+        fallback = RuleBasedCoordinatorPolicy(agent_order=self.agent_order)
+        try:
+            response = self.client.generate(
+                LLMRequest(
+                    system_prompt=bundle.system_prompt,
+                    user_prompt=user_prompt,
+                    temperature=0.1,
+                )
             )
-        )
+        except Exception as exc:
+            self.last_trace = {
+                "prompt_key": bundle.key,
+                "system_prompt": bundle.system_prompt,
+                "user_prompt": user_prompt,
+                "raw_response": None,
+                "fallback_used": True,
+                "fallback_reason": "llm_error",
+                "error": str(exc),
+                "system_path": bundle.system_path,
+                "user_path": bundle.user_path,
+            }
+            return fallback.assign(observation, worker_states)
         self.last_trace = {
             "prompt_key": bundle.key,
             "system_prompt": bundle.system_prompt,
             "user_prompt": user_prompt,
             "raw_response": response,
+            "fallback_used": False,
             "system_path": bundle.system_path,
             "user_path": bundle.user_path,
         }
@@ -217,7 +288,8 @@ class LLMCoordinatorPolicy:
         if assignments:
             return assignments
 
-        fallback = RuleBasedCoordinatorPolicy(agent_order=self.agent_order)
+        self.last_trace["fallback_used"] = True
+        self.last_trace["fallback_reason"] = "parse_failed"
         return fallback.assign(observation, worker_states)
 
     def _build_prompt(self, observation: CoordinatorObservation, worker_states: Dict[str, WorkerState]) -> str:
@@ -239,6 +311,13 @@ class LLMCoordinatorPolicy:
                     "risk": worker_states[aid].risk,
                     "current_role": worker_states[aid].current_role.value,
                     "actions_taken": worker_states[aid].actions_taken,
+                    "last_target_step": worker_states[aid].last_target_step,
+                    "last_target_rating": worker_states[aid].last_target_rating,
+                    "consecutive_target_steps": worker_states[aid].consecutive_target_steps,
+                    "target_action_count": worker_states[aid].target_action_count,
+                    "recent_target_steps": list(worker_states[aid].recent_target_steps[-4:]),
+                    "recent_target_ratings": list(worker_states[aid].recent_target_ratings[-4:]),
+                    "last_observed_signal": dict(worker_states[aid].last_observed_signal),
                 }
                 for aid in self.agent_order
             },

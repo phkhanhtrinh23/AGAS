@@ -10,7 +10,7 @@ venv/
 .coverage
 htmlcov/
 
-outputs/
+outputs/*.pkl
 processed/
 *.log
 

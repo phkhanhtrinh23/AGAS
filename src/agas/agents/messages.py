@@ -149,6 +149,11 @@ class AgentBlackBoxSignal:
     accepted_actions: int = 0
     dropped_actions: int = 0
     discounted_actions: int = 0
+    recent_target_actions: int = 0
+    recent_target_max_actions: int = 0
+    recent_target_mean_rating: float = 0.0
+    target_cooldown_remaining: int = 0
+    repeated_target_pressure: float = 0.0
     acceptance_rate: float = 1.0
     discount_rate: float = 0.0
     mean_discount: float = 0.0

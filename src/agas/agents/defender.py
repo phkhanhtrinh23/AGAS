@@ -17,7 +17,10 @@ class DefenseMonitorConfig:
     discount_weight: float = 0.35
     weak_rank_weight: float = 0.2
     streak_weight: float = 0.15
+    repeat_target_weight: float = 0.3
     weak_rank_threshold: int = 2
+    repeat_target_window_steps: int = 4
+    target_cooldown_steps: int = 2
 
 
 class DefenseMonitorAgent:
@@ -32,6 +35,7 @@ class DefenseMonitorAgent:
 
         self.config = config or DefenseMonitorConfig()
         self._suppression_streaks: Dict[str, int] = {}
+        self._target_action_history: Dict[str, List[dict]] = {}
 
     def analyze(
         self,
@@ -87,6 +91,35 @@ class DefenseMonitorAgent:
             targeted = any(str(action.item_id) == str(target_item_id) for action in actions)
             weak_rank = targeted and target_rank_delta <= self.config.weak_rank_threshold
 
+            history = self._target_action_history.setdefault(agent_id, [])
+            target_actions = [action for action in actions if str(action.item_id) == str(target_item_id)]
+            for action in target_actions:
+                history.append({"step": int(step), "rating": float(action.rating)})
+            min_step = step - max(self.config.repeat_target_window_steps * 2, 8)
+            history = [entry for entry in history if int(entry["step"]) >= min_step]
+            self._target_action_history[agent_id] = history
+
+            recent_target = [entry for entry in history if step - int(entry["step"]) < self.config.repeat_target_window_steps]
+            recent_target_actions = len(recent_target)
+            recent_target_max_actions = sum(1 for entry in recent_target if float(entry["rating"]) >= 4.9)
+            recent_target_mean_rating = (
+                float(sum(float(entry["rating"]) for entry in recent_target) / len(recent_target))
+                if recent_target
+                else 0.0
+            )
+            last_target_step = max((int(entry["step"]) for entry in history), default=None)
+            target_cooldown_remaining = (
+                0
+                if last_target_step is None
+                else max(0, self.config.target_cooldown_steps - (step - last_target_step))
+            )
+            repeated_target_pressure = min(
+                1.0,
+                (recent_target_actions / max(1, self.config.repeat_target_window_steps))
+                + (0.25 * recent_target_max_actions)
+                + (0.2 * min(1.0, target_cooldown_remaining / max(1, self.config.target_cooldown_steps))),
+            )
+
             suppression_event = attempted > 0 and (dropped > 0 or discounted > 0 or weak_rank)
             previous_streak = self._suppression_streaks.get(agent_id, 0)
             if suppression_event:
@@ -103,6 +136,7 @@ class DefenseMonitorAgent:
             suspicion_score += self.config.discount_weight * min(1.0, mean_discount / 2.0)
             suspicion_score += self.config.weak_rank_weight * (1.0 if weak_rank else 0.0)
             suspicion_score += self.config.streak_weight * min(1.0, streak / 3.0)
+            suspicion_score += self.config.repeat_target_weight * repeated_target_pressure
             suspicion_score = float(min(1.0, suspicion_score))
 
             notes: list[str] = []
@@ -112,6 +146,10 @@ class DefenseMonitorAgent:
                 notes.append(f"{discounted} discounted")
             if weak_rank:
                 notes.append("weak target-rank movement")
+            if recent_target_actions:
+                notes.append(f"recent_target_actions={recent_target_actions}")
+            if target_cooldown_remaining:
+                notes.append(f"target_cooldown_remaining={target_cooldown_remaining}")
             if streak:
                 notes.append(f"suppression_streak={streak}")
 
@@ -121,6 +159,11 @@ class DefenseMonitorAgent:
                 accepted_actions=accepted,
                 dropped_actions=dropped,
                 discounted_actions=discounted,
+                recent_target_actions=recent_target_actions,
+                recent_target_max_actions=recent_target_max_actions,
+                recent_target_mean_rating=recent_target_mean_rating,
+                target_cooldown_remaining=target_cooldown_remaining,
+                repeated_target_pressure=repeated_target_pressure,
                 acceptance_rate=acceptance_rate,
                 discount_rate=discount_rate,
                 mean_discount=mean_discount,
@@ -137,6 +180,10 @@ class DefenseMonitorAgent:
                     internal_reasons.append("dropped_action")
                 elif outcome.discount_applied:
                     internal_reasons.append("influence_discounting")
+            if repeated_target_pressure >= 0.5:
+                internal_reasons.append("repeated_target_pressure")
+            if target_cooldown_remaining > 0:
+                internal_reasons.append("target_cooldown_pressure")
             if hidden_lockdown_active and worker_states[agent_id].risk >= 0.0:
                 if any(not outcome.accepted for outcome in agent_outcomes):
                     internal_reasons.append("lockdown_pressure")

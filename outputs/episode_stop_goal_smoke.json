@@ -1,0 +1,57 @@
+{
+  "dataset": "ml-latest-small",
+  "target_item_id": "101",
+  "target_keyword": "horror",
+  "num_steps": 5,
+  "num_agents": 4,
+  "coordinator_policy": "rule",
+  "worker_policy": "rule",
+  "prompt_root": "prompts",
+  "initial_rank": 6,
+  "initial_total_candidates": 74,
+  "stop_on_goal": true,
+  "stopped_early": true,
+  "stop_reason": "Target already satisfied before step 0: rank 6 <= goal 10",
+  "executed_steps": 0,
+  "goal_rank": 10,
+  "best_rank": 6,
+  "best_rank_step": null,
+  "goal_achieved": true,
+  "goal_first_reached_step": null,
+  "final_rank": 6,
+  "final_total_candidates": 74,
+  "final_worker_states": {
+    "agent_1": {
+      "trust": 0.0,
+      "risk": 0.0,
+      "actions_taken": 0,
+      "role_history": []
+    },
+    "agent_2": {
+      "trust": 0.0,
+      "risk": 0.0,
+      "actions_taken": 0,
+      "role_history": []
+    },
+    "agent_3": {
+      "trust": 0.0,
+      "risk": 0.0,
+      "actions_taken": 0,
+      "role_history": []
+    },
+    "agent_4": {
+      "trust": 0.0,
+      "risk": 0.0,
+      "actions_taken": 0,
+      "role_history": []
+    }
+  },
+  "agent_logs": {
+    "agent_1": [],
+    "agent_2": [],
+    "agent_3": [],
+    "agent_4": []
+  },
+  "coordinator_logs": [],
+  "history": []
+}
