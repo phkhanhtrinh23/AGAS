@@ -2,14 +2,12 @@ Decide the next-step role for each agent using the black-box observation below.
 
 Guidance:
 - Prefer profiler when you need to probe whether the system is still accepting ratings.
+- Keep at least one profiler active periodically during a long run so the group keeps
+  checking whether ratings are being integrated.
 - Prefer camouflaguer when suppression or discounting is visible.
 - Prefer inactive when an agent's suppression streak or suspicion is high.
 - Prefer sniper only when the target still needs promotion and recent signals suggest the
   agent can act with acceptable risk.
-- Avoid consecutive reuse of the same sniper when recent target repetition or cooldown pressure
-  is visible for that agent.
-- If the target has recently stalled, rotate payload responsibility instead of sending the same
-  account to the target again.
 
 Observation:
 {{context_json}}

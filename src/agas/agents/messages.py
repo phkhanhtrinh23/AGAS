@@ -27,7 +27,11 @@ class ProtocolMessage:
     payload: Dict[str, Any]
 
     def to_dict(self) -> Dict[str, Any]:
-        """Convert dataclass payload into plain JSON-serializable dict."""
+        """Convert dataclass payload into a plain JSON-serializable dict.
+
+        Returns:
+            Dictionary representation of the protocol message.
+        """
 
         return asdict(self)
 
@@ -42,7 +46,11 @@ class RatingAction:
     reason: str
 
     def to_dict(self) -> Dict[str, Any]:
-        """Return a dictionary representation for logging and transport."""
+        """Return a dictionary representation for logging and transport.
+
+        Returns:
+            Dictionary representation of the rating action.
+        """
 
         return asdict(self)
 
@@ -64,7 +72,11 @@ class CoordinatorObservation:
     notes: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize the full observation for policy input or trace output."""
+        """Serialize the full observation for policy input or trace output.
+
+        Returns:
+            Dictionary representation of the coordinator observation.
+        """
 
         return asdict(self)
 
@@ -79,7 +91,11 @@ class RoleAssignment:
     rationale: str
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize assignment while converting enum roles to wire-format strings."""
+        """Serialize assignment while converting enum roles to wire-format strings.
+
+        Returns:
+            Dictionary representation of the role assignment.
+        """
 
         data = asdict(self)
         data["role"] = self.role.value
@@ -99,7 +115,11 @@ class WorkerActionReport:
     trace: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize worker actions and metadata for history capture."""
+        """Serialize worker actions and metadata for history capture.
+
+        Returns:
+            Dictionary representation of the worker report.
+        """
 
         return {
             "step": self.step,
@@ -126,7 +146,11 @@ class ActionOutcome:
     reason: str
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize environment decision for one rating action."""
+        """Serialize environment decision for one rating action.
+
+        Returns:
+            Dictionary representation of the action outcome.
+        """
 
         return {
             "action": self.action.to_dict(),
@@ -149,11 +173,6 @@ class AgentBlackBoxSignal:
     accepted_actions: int = 0
     dropped_actions: int = 0
     discounted_actions: int = 0
-    recent_target_actions: int = 0
-    recent_target_max_actions: int = 0
-    recent_target_mean_rating: float = 0.0
-    target_cooldown_remaining: int = 0
-    repeated_target_pressure: float = 0.0
     acceptance_rate: float = 1.0
     discount_rate: float = 0.0
     mean_discount: float = 0.0
@@ -162,7 +181,11 @@ class AgentBlackBoxSignal:
     notes: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize one worker's black-box response signal."""
+        """Serialize one worker's black-box response signal.
+
+        Returns:
+            Dictionary representation of the black-box signal.
+        """
 
         return asdict(self)
 
@@ -182,7 +205,11 @@ class DefenseReport:
     notes: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize defense monitor report for logging and analysis."""
+        """Serialize defense monitor report for logging and analysis.
+
+        Returns:
+            Dictionary representation of the defense report.
+        """
 
         return {
             "step": self.step,
@@ -214,7 +241,11 @@ class EnvironmentFeedback:
     notes: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        """Serialize full per-step environment feedback for the episode timeline."""
+        """Serialize full per-step environment feedback for the episode timeline.
+
+        Returns:
+            Dictionary representation of the environment feedback.
+        """
 
         return {
             "step": self.step,

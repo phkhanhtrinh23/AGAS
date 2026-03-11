@@ -35,16 +35,12 @@ class CoordinatorPolicy(Protocol):
 
 
 @dataclass
-class CoordinatorGuardrailConfig:
-    """Post-policy assignment guardrails enforcing warm-up and cooldown constraints."""
+class CoordinatorRuntimeConfig:
+    """Lightweight runtime guardrails for profiler usage."""
 
-    min_trust_for_target_push: float = 0.55
-    early_step_warmup_steps: int = 2
-    very_poor_rank_floor: int = 25
-    very_poor_rank_fraction: float = 0.35
-    max_snipers_per_step: int = 2
-    max_repeat_pressure_for_sniper: float = 0.55
-    max_suspicion_for_sniper: float = 0.6
+    profiler_interval: int = 3
+    profiler_probe_suspicion: float = 0.35
+    profiler_probe_on_stall: bool = True
 
 
 @dataclass
@@ -69,39 +65,6 @@ class RuleBasedCoordinatorPolicy:
         if not isinstance(signal, dict):
             return 0.0
         return float(signal.get("suspected_filtering_score", 0.0))
-
-    @staticmethod
-    def _agent_signal(observation: CoordinatorObservation, agent_id: str) -> Dict[str, Any]:
-        """Return the public black-box signal dictionary for one worker."""
-
-        signal = observation.signals_by_agent.get(agent_id, {})
-        return signal if isinstance(signal, dict) else {}
-
-    @classmethod
-    def _sniper_score(
-        cls,
-        observation: CoordinatorObservation,
-        worker_states: Dict[str, WorkerState],
-        agent_id: str,
-    ) -> float:
-        """Score how suitable a worker is for the next sniper action.
-
-        Args:
-            observation: Current black-box observation.
-            worker_states: Mutable worker states keyed by agent ID.
-            agent_id: Worker to score.
-
-        Returns:
-            Scalar score where higher values indicate a better sniper candidate.
-        """
-
-        signal = cls._agent_signal(observation, agent_id)
-        trust_risk = float(worker_states[agent_id].trust - worker_states[agent_id].risk)
-        suspicion = float(signal.get("suspected_filtering_score", 0.0))
-        repeat_pressure = float(signal.get("repeated_target_pressure", 0.0))
-        cooldown_remaining = int(signal.get("target_cooldown_remaining", 0))
-        target_actions = int(signal.get("recent_target_actions", 0))
-        return trust_risk - (1.4 * suspicion) - (1.2 * repeat_pressure) - (0.8 * cooldown_remaining) - (0.15 * target_actions)
 
     def assign(
         self,
@@ -145,9 +108,8 @@ class RuleBasedCoordinatorPolicy:
             return assignments
 
         if step == 1:
-            if self.agent_order:
-                assignments[self.agent_order[0]].role = AgentRole.PROFILER
-                assignments[self.agent_order[0]].rationale = "Continue profiling while trust bank is built."
+            assignments[self.agent_order[0]].role = AgentRole.PROFILER
+            assignments[self.agent_order[0]].rationale = "Continue profiling while trust bank is built."
             for aid in self.agent_order[1:3]:
                 assignments[aid].role = AgentRole.CAMOUFLAGEUR
                 assignments[aid].rationale = "Build target-domain trust embedding before payload delivery."
@@ -157,9 +119,8 @@ class RuleBasedCoordinatorPolicy:
             for aid in self.agent_order[1:3]:
                 assignments[aid].role = AgentRole.SNIPER
                 assignments[aid].rationale = "Deliver synchronized payload after camouflage warm-up."
-            if self.agent_order:
-                assignments[self.agent_order[0]].role = AgentRole.CAMOUFLAGEUR
-                assignments[self.agent_order[0]].rationale = "Generate benign background activity as timing noise."
+            assignments[self.agent_order[0]].role = AgentRole.CAMOUFLAGEUR
+            assignments[self.agent_order[0]].rationale = "Generate benign background activity as timing noise."
             return assignments
 
         alerted = [
@@ -167,7 +128,6 @@ class RuleBasedCoordinatorPolicy:
             for aid in self.agent_order
             if aid in observation.alerts_by_agent or self._black_box_suspicion(observation, aid) >= 0.55
         ]
-
         if alerted:
             first = alerted[0]
             assignments[first].role = AgentRole.CAMOUFLAGEUR
@@ -183,37 +143,21 @@ class RuleBasedCoordinatorPolicy:
                     break
             return assignments
 
-        sniper_candidates = []
-        for aid in self.agent_order:
-            signal = self._agent_signal(observation, aid)
-            suspicion = float(signal.get("suspected_filtering_score", 0.0))
-            repeat_pressure = float(signal.get("repeated_target_pressure", 0.0))
-            cooldown_remaining = int(signal.get("target_cooldown_remaining", 0))
-            if suspicion >= 0.55 or repeat_pressure >= 0.55 or cooldown_remaining > 0:
-                continue
-            sniper_candidates.append(aid)
-
         ranked = sorted(
             self.agent_order,
-            key=lambda aid: self._sniper_score(observation, worker_states, aid),
+            key=lambda aid: worker_states[aid].trust - worker_states[aid].risk,
             reverse=True,
         )
 
-        if sniper_candidates and observation.target_rank > 5:
-            best = max(sniper_candidates, key=lambda aid: self._sniper_score(observation, worker_states, aid))
+        if observation.target_rank > 5 and ranked:
+            best = ranked[0]
             assignments[best].role = AgentRole.SNIPER
-            assignments[best].rationale = "Rotate to the least-suppressed trusted profile for the next payload step."
+            assignments[best].rationale = "Use the strongest trusted profile for the next payload step."
 
         support_pool = [aid for aid in ranked if assignments[aid].role == AgentRole.INACTIVE]
-        if not sniper_candidates and observation.target_rank_delta <= 1:
-            if support_pool:
-                assignments[support_pool[0]].role = AgentRole.PROFILER
-                assignments[support_pool[0]].rationale = "Probe integration again while sniper cooldown pressure remains high."
-                support_pool = support_pool[1:]
-
         for aid in support_pool[:3]:
             assignments[aid].role = AgentRole.CAMOUFLAGEUR
-            assignments[aid].rationale = "Support trust camouflage, cooldown recovery, and cluster alignment."
+            assignments[aid].rationale = "Support trust camouflage and cluster alignment."
 
         return assignments
 
@@ -252,16 +196,24 @@ class LLMCoordinatorPolicy:
         bundle = self.prompt_store.load(
             key="coordinator",
             default_system=(
-                "You are a coordinator for an AGAS simulation. Use only black-box response signals, worker "
-                "trust/risk, recent target repetition pressure, cooldown hints, and target-rank movement to "
-                "assign roles. Rotate snipers when repeated target pressure rises. Output strictly valid JSON "
-                "with keys as agent ids and values in {profiler, camouflaguer, sniper, inactive}."
+                "You are the coordinator for an AGAS simulation operating under black-box feedback. "
+                "You do not see the defender's hidden alerts directly. You must infer filtering pressure "
+                "from acceptance rates, discounting, suppression streaks, trust/risk values, and target-rank "
+                "movement. Keep using profiler periodically as a scout instead of abandoning it after the "
+                "opening steps. Assign exactly one role to each agent. Return strictly valid JSON with agent "
+                "IDs as keys and values in: profiler, camouflaguer, sniper, inactive."
             ),
             default_user=(
-                "Assign one role to each agent using the black-box observation below.\n"
-                "Prefer stealth when filtering suspicion is high. Avoid reusing the same sniper when recent "
-                "target repetition or cooldown pressure is visible.\n"
-                "Context:\n{{context_json}}"
+                "Decide the next-step role for each agent using the black-box observation below.\n\n"
+                "Guidance:\n"
+                "- Prefer profiler when you need to probe whether the system is still accepting ratings.\n"
+                "- Keep at least one profiler active periodically during a long run so the group keeps "
+                "checking whether ratings are being integrated.\n"
+                "- Prefer camouflaguer when suppression or discounting is visible.\n"
+                "- Prefer inactive when an agent's suppression streak or suspicion is high.\n"
+                "- Prefer sniper only when the target still needs promotion and recent signals suggest the "
+                "agent can act with acceptable risk.\n\n"
+                "Observation:\n{{context_json}}"
             ),
         )
         user_prompt = bundle.render_user({"context_json": prompt})
@@ -324,13 +276,6 @@ class LLMCoordinatorPolicy:
                     "risk": worker_states[aid].risk,
                     "current_role": worker_states[aid].current_role.value,
                     "actions_taken": worker_states[aid].actions_taken,
-                    "last_target_step": worker_states[aid].last_target_step,
-                    "last_target_rating": worker_states[aid].last_target_rating,
-                    "consecutive_target_steps": worker_states[aid].consecutive_target_steps,
-                    "target_action_count": worker_states[aid].target_action_count,
-                    "recent_target_steps": list(worker_states[aid].recent_target_steps[-4:]),
-                    "recent_target_ratings": list(worker_states[aid].recent_target_ratings[-4:]),
-                    "last_observed_signal": dict(worker_states[aid].last_observed_signal),
                 }
                 for aid in self.agent_order
             },
@@ -374,119 +319,136 @@ class LLMCoordinatorPolicy:
 class Coordinator:
     """Coordinator orchestrating role assignments each step."""
 
-    def __init__(self, policy: CoordinatorPolicy, guardrails: CoordinatorGuardrailConfig | None = None):
+    def __init__(self, policy: CoordinatorPolicy, runtime_config: CoordinatorRuntimeConfig | None = None):
         """Store the selected assignment policy implementation.
 
         Args:
             policy: Coordinator strategy object that implements ``assign``.
-            guardrails: Optional post-processing guardrail configuration.
+            runtime_config: Optional coordinator-side runtime settings used to
+                enforce periodic profiler probes across all policies.
         """
 
         self.policy = policy
-        self.guardrails = guardrails or CoordinatorGuardrailConfig()
-
-    def _rank_is_very_poor(self, observation: CoordinatorObservation) -> bool:
-        """Return whether the current target rank is bad enough to justify emergency escalation."""
-
-        threshold = max(
-            self.guardrails.very_poor_rank_floor,
-            int(observation.total_candidates * self.guardrails.very_poor_rank_fraction),
-        )
-        return int(observation.target_rank) >= threshold
+        self.runtime_config = runtime_config or CoordinatorRuntimeConfig()
 
     @staticmethod
-    def _signal(observation: CoordinatorObservation, agent_id: str) -> Dict[str, Any]:
-        """Return public signal dictionary for one worker."""
+    def _agent_signal(observation: CoordinatorObservation, agent_id: str) -> Dict[str, Any]:
+        """Return the public black-box signal dictionary for one worker.
+
+        Args:
+            observation: Current environment observation.
+            agent_id: Worker ID whose signal should be inspected.
+
+        Returns:
+            Dictionary of public black-box signals for the worker.
+        """
 
         signal = observation.signals_by_agent.get(agent_id, {})
         return signal if isinstance(signal, dict) else {}
 
-    def _sniper_guard_ok(
+    def _needs_profiler_probe(
         self,
         observation: CoordinatorObservation,
-        worker_states: Dict[str, WorkerState],
-        agent_id: str,
+        assignments: Dict[str, RoleAssignment],
     ) -> bool:
-        """Check whether a worker is allowed to perform a direct target push this step."""
+        """Return whether the coordinator should force a profiling step.
 
-        state = worker_states[agent_id]
-        signal = self._signal(observation, agent_id)
-        trust = float(state.trust)
-        suspicion = float(signal.get("suspected_filtering_score", 0.0))
-        repeat_pressure = float(signal.get("repeated_target_pressure", 0.0))
-        cooldown_remaining = int(signal.get("target_cooldown_remaining", 0))
+        Args:
+            observation: Current environment observation.
+            assignments: Raw role assignments proposed by the underlying policy.
 
-        if trust < self.guardrails.min_trust_for_target_push:
-            return False
-        if cooldown_remaining > 0:
-            return False
-        if repeat_pressure >= self.guardrails.max_repeat_pressure_for_sniper:
-            return False
-        if suspicion >= self.guardrails.max_suspicion_for_sniper:
-            return False
-        if observation.step < self.guardrails.early_step_warmup_steps and not self._rank_is_very_poor(observation):
-            return False
-        return True
+        Returns:
+            ``True`` when no profiler is currently assigned and a fresh probe
+            should be injected.
+        """
 
-    def _apply_guardrails(
+        if any(assignment.role == AgentRole.PROFILER for assignment in assignments.values()):
+            return False
+
+        if observation.step <= 1:
+            return True
+
+        if self.runtime_config.profiler_interval > 0 and observation.step % self.runtime_config.profiler_interval == 0:
+            return True
+
+        if self.runtime_config.profiler_probe_on_stall and observation.target_rank_delta <= 0:
+            return True
+
+        for agent_id in assignments:
+            signal = self._agent_signal(observation, agent_id)
+            if float(signal.get("suspected_filtering_score", 0.0)) >= self.runtime_config.profiler_probe_suspicion:
+                return True
+        return False
+
+    @staticmethod
+    def _pick_profiler_candidate(
+        assignments: Dict[str, RoleAssignment],
+        worker_states: Dict[str, WorkerState],
+    ) -> str | None:
+        """Choose which worker should be converted into a profiler.
+
+        Args:
+            assignments: Raw role assignments proposed by the policy.
+            worker_states: Current mutable worker states.
+
+        Returns:
+            Selected worker ID, or ``None`` if no reassignment is possible.
+        """
+
+        by_role = [
+            AgentRole.INACTIVE,
+            AgentRole.CAMOUFLAGEUR,
+            AgentRole.PROFILER,
+            AgentRole.SNIPER,
+        ]
+        for role in by_role:
+            candidates = [aid for aid, assignment in assignments.items() if assignment.role == role]
+            if not candidates:
+                continue
+            candidates.sort(key=lambda aid: (worker_states[aid].risk, -worker_states[aid].trust), reverse=True)
+            return candidates[0]
+        return None
+
+    def _ensure_profiler_presence(
         self,
         observation: CoordinatorObservation,
         worker_states: Dict[str, WorkerState],
         assignments: Dict[str, RoleAssignment],
     ) -> Dict[str, RoleAssignment]:
-        """Sanitize assignments so direct target pushes require trust warm-up and low heat.
+        """Inject a profiler assignment when the attack needs a fresh safety probe.
 
         Args:
             observation: Current environment observation.
-            worker_states: Mutable worker states keyed by agent ID.
-            assignments: Raw assignments proposed by the policy.
+            worker_states: Current mutable worker states.
+            assignments: Raw assignments from the underlying policy.
 
         Returns:
-            Guardrail-adjusted assignments.
+            Possibly adjusted assignment mapping with at least one profiler when
+            a new probe is required.
         """
 
-        adjusted = {aid: RoleAssignment(**assignment.__dict__) for aid, assignment in assignments.items()}
-        sniper_candidates: list[str] = []
-        invalid_snipers: list[str] = []
+        if not self._needs_profiler_probe(observation, assignments):
+            return assignments
 
-        for agent_id, assignment in adjusted.items():
-            if assignment.role != AgentRole.SNIPER:
-                continue
-            if self._sniper_guard_ok(observation, worker_states, agent_id):
-                sniper_candidates.append(agent_id)
-            else:
-                invalid_snipers.append(agent_id)
+        candidate = self._pick_profiler_candidate(assignments, worker_states)
+        if candidate is None:
+            return assignments
 
-        if len(sniper_candidates) > self.guardrails.max_snipers_per_step:
-            ranked = sorted(
-                sniper_candidates,
-                key=lambda aid: worker_states[aid].trust - worker_states[aid].risk,
-                reverse=True,
+        adjusted = {
+            aid: RoleAssignment(
+                step=assignment.step,
+                agent_id=assignment.agent_id,
+                role=assignment.role,
+                rationale=assignment.rationale,
             )
-            keep = set(ranked[: self.guardrails.max_snipers_per_step])
-            invalid_snipers.extend([aid for aid in sniper_candidates if aid not in keep])
-
-        for agent_id in invalid_snipers:
-            adjusted[agent_id] = RoleAssignment(
-                step=observation.step,
-                agent_id=agent_id,
-                role=AgentRole.CAMOUFLAGEUR if observation.step > 0 else AgentRole.PROFILER,
-                rationale=(
-                    "Guardrail blocked direct target push because trust warm-up, cooldown, or suppression "
-                    "constraints were not satisfied."
-                ),
-            )
-
-        if observation.step == 0 and not any(assignment.role == AgentRole.PROFILER for assignment in adjusted.values()):
-            for agent_id in sorted(adjusted):
-                adjusted[agent_id] = RoleAssignment(
-                    step=observation.step,
-                    agent_id=agent_id,
-                    role=AgentRole.PROFILER,
-                    rationale="Guardrail forces initial profiling before any payload delivery.",
-                )
-                break
-
+            for aid, assignment in assignments.items()
+        }
+        adjusted[candidate] = RoleAssignment(
+            step=observation.step,
+            agent_id=candidate,
+            role=AgentRole.PROFILER,
+            rationale="Periodic profiler probe to verify whether the recommender is still integrating ratings.",
+        )
         return adjusted
 
     def assign_roles(
@@ -505,4 +467,4 @@ class Coordinator:
         """
 
         assignments = self.policy.assign(observation, worker_states)
-        return self._apply_guardrails(observation, worker_states, assignments)
+        return self._ensure_profiler_presence(observation, worker_states, assignments)

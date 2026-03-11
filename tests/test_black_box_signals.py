@@ -104,9 +104,6 @@ def test_llm_worker_loads_prompt_files_and_logs_trace(tmp_path: Path) -> None:
         target_cluster_items=["101", "202"],
         competitor_items=["202"],
         noise_items=["303"],
-        current_target_rank=100,
-        total_candidates=500,
-        target_rank_delta=0,
     )
 
     report = worker.act(assignment=assignment, step=2, ctx=ctx)
@@ -114,6 +111,7 @@ def test_llm_worker_loads_prompt_files_and_logs_trace(tmp_path: Path) -> None:
     assert report.policy == "openai"
     assert len(report.actions) == 1
     assert report.actions[0].item_id == "101"
+    assert report.actions[0].rating == 5.0
     assert report.trace is not None
     assert report.trace["system_prompt"] == "CUSTOM SNIPER SYSTEM"
     assert report.trace["system_path"] is not None
@@ -143,15 +141,13 @@ def test_llm_worker_falls_back_to_rule_actions_when_provider_fails(tmp_path: Pat
         target_cluster_items=["101", "202"],
         competitor_items=["202"],
         noise_items=["303"],
-        current_target_rank=100,
-        total_candidates=500,
-        target_rank_delta=0,
     )
 
     report = worker.act(assignment=assignment, step=0, ctx=ctx)
 
     assert len(report.actions) >= 1
     assert report.actions[0].item_id == "101"
+    assert report.actions[0].rating == 5.0
     assert report.trace is not None
     assert report.trace["fallback_used"] is True
     assert report.trace["fallback_reason"] == "llm_error"
@@ -193,38 +189,44 @@ def test_llm_coordinator_falls_back_to_rule_assignments_when_provider_fails(tmp_
     assert "openai unavailable" in policy.last_trace["error"]
 
 
-def test_coordinator_guardrail_blocks_step0_sniper_without_warmup() -> None:
-    """Ensure post-policy guardrails prevent sniper use before trust warm-up."""
+def test_coordinator_injects_periodic_profiler_probe() -> None:
+    """Ensure the coordinator does not abandon the profiler role during long runs."""
 
-    class AggressivePolicy:
-        def assign(self, observation, worker_states):
+    class NoProfilerPolicy:
+        """Test policy that never assigns profiler on its own."""
+
+        def assign(self, observation, worker_states):  # pragma: no cover - simple test shim
             return {
-                "agent_1": RoleAssignment(step=0, agent_id="agent_1", role=AgentRole.SNIPER, rationale="attack now"),
-                "agent_2": RoleAssignment(step=0, agent_id="agent_2", role=AgentRole.INACTIVE, rationale="idle"),
+                "agent_1": RoleAssignment(step=observation.step, agent_id="agent_1", role=AgentRole.SNIPER, rationale="attack"),
+                "agent_2": RoleAssignment(step=observation.step, agent_id="agent_2", role=AgentRole.CAMOUFLAGEUR, rationale="cover"),
+                "agent_3": RoleAssignment(step=observation.step, agent_id="agent_3", role=AgentRole.CAMOUFLAGEUR, rationale="cover"),
+                "agent_4": RoleAssignment(step=observation.step, agent_id="agent_4", role=AgentRole.INACTIVE, rationale="idle"),
             }
 
-    coordinator = Coordinator(policy=AggressivePolicy())
+    coordinator = Coordinator(policy=NoProfilerPolicy())
     observation = CoordinatorObservation(
-        step=0,
+        step=6,
         target_item_id="101",
         target_rank=12,
-        total_candidates=80,
+        total_candidates=120,
+        target_rank_delta=0,
     )
     worker_states = {
-        "agent_1": WorkerState(agent_id="agent_1", trust=0.0, risk=0.0),
-        "agent_2": WorkerState(agent_id="agent_2", trust=0.0, risk=0.0),
+        "agent_1": WorkerState(agent_id="agent_1", trust=1.0, risk=0.6),
+        "agent_2": WorkerState(agent_id="agent_2", trust=0.8, risk=0.3),
+        "agent_3": WorkerState(agent_id="agent_3", trust=0.7, risk=0.2),
+        "agent_4": WorkerState(agent_id="agent_4", trust=0.1, risk=0.0),
     }
 
     assignments = coordinator.assign_roles(observation=observation, worker_states=worker_states)
 
-    assert assignments["agent_1"].role == AgentRole.PROFILER
-    assert all(assignment.role != AgentRole.SNIPER for assignment in assignments.values())
+    assert any(assignment.role == AgentRole.PROFILER for assignment in assignments.values())
 
 
-def test_rule_sniper_can_escalate_to_five_after_trust_warmup() -> None:
-    """Ensure the adaptive sniper can escalate to 5.0 once trust is earned and cooldown is clear."""
+def test_rule_sniper_uses_fixed_max_target_rating() -> None:
+    """Ensure the rule sniper always pushes the target with a 5.0 rating."""
 
-    worker = WorkerAgent(state=WorkerState(agent_id="agent_1", trust=0.85, risk=0.1))
+    worker = WorkerAgent(state=WorkerState(agent_id="agent_1", trust=0.2, risk=0.1))
     assignment = RoleAssignment(step=2, agent_id="agent_1", role=AgentRole.SNIPER, rationale="test")
     ctx = WorkerContext(
         target_item_id="101",
@@ -232,13 +234,12 @@ def test_rule_sniper_can_escalate_to_five_after_trust_warmup() -> None:
         target_cluster_items=["101", "202"],
         competitor_items=["202", "303"],
         noise_items=["404"],
-        current_target_rank=20,
-        total_candidates=120,
-        target_rank_delta=0,
     )
 
     report = worker.act(assignment=assignment, step=2, ctx=ctx)
 
     target_actions = [action for action in report.actions if action.item_id == "101"]
+    competitor_actions = [action for action in report.actions if action.item_id != "101"]
     assert len(target_actions) == 1
     assert target_actions[0].rating == 5.0
+    assert all(action.rating == 1.0 for action in competitor_actions)

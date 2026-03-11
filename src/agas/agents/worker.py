@@ -22,17 +22,6 @@ class WorkerState:
     current_role: AgentRole = AgentRole.INACTIVE
     actions_taken: int = 0
     role_history: List[str] = field(default_factory=list)
-    last_target_step: int | None = None
-    last_target_rating: float | None = None
-    last_effective_target_rating: float | None = None
-    last_target_outcome: str | None = None
-    consecutive_target_steps: int = 0
-    target_action_count: int = 0
-    recent_target_steps: List[int] = field(default_factory=list)
-    recent_target_ratings: List[float] = field(default_factory=list)
-    recent_effective_target_ratings: List[float] = field(default_factory=list)
-    recent_action_history: List[Dict[str, Any]] = field(default_factory=list)
-    last_observed_signal: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -44,9 +33,6 @@ class WorkerContext:
     target_cluster_items: Sequence[str]
     competitor_items: Sequence[str]
     noise_items: Sequence[str]
-    current_target_rank: int
-    total_candidates: int
-    target_rank_delta: int
 
 
 @dataclass
@@ -56,9 +42,6 @@ class WorkerPolicyConfig:
     profiler_actions: int = 3
     camouflaguer_actions: int = 2
     sniper_competitor_actions: int = 2
-    target_history_window: int = 4
-    sniper_target_cooldown_steps: int = 2
-    min_trust_for_target_push: float = 0.55
 
 
 class WorkerAgent:
@@ -126,7 +109,7 @@ class WorkerAgent:
         elif assignment.role == AgentRole.CAMOUFLAGEUR:
             actions = self._act_camouflaguer(ctx)
         elif assignment.role == AgentRole.SNIPER:
-            actions = self._act_sniper(step, ctx)
+            actions = self._act_sniper(ctx)
         else:
             actions = []
 
@@ -194,20 +177,12 @@ class WorkerAgent:
         """
 
         focus_items = list(ctx.target_cluster_items)
-        if self.state.target_action_count == 0 and self.state.trust < self.config.min_trust_for_target_push:
-            focus_items = list(ctx.target_cluster_items[:50])
         if self.state.risk > 1.0:
             focus_items = list(ctx.noise_items) + focus_items
-
         sampled = self._sample_items(focus_items, self.config.camouflaguer_actions)
         out = []
         for item_id in sampled:
-            if self.state.target_action_count == 0 and self.state.trust < self.config.min_trust_for_target_push:
-                rating = self._rand.choice([4.0, 4.5])
-            elif ctx.current_target_rank <= 15 or self.state.risk > 1.0:
-                rating = self._rand.choice([3.0, 4.0])
-            else:
-                rating = self._rand.choice([3.0, 4.0, 4.5, 5.0])
+            rating = self._rand.choice([3.0, 4.0, 5.0])
             out.append(
                 RatingAction(
                     agent_id=self.state.agent_id,
@@ -218,147 +193,32 @@ class WorkerAgent:
             )
         return out
 
-    def _target_cooldown_remaining(self, step: int) -> int:
-        """Return remaining cooldown steps before another direct target push is low-risk.
+    def _act_sniper(self, ctx: WorkerContext) -> List[RatingAction]:
+        """Deliver the fixed high-intensity sniper payload.
 
         Args:
-            step: Current episode step index.
-
-        Returns:
-            Number of steps still remaining in the target cooldown window.
-        """
-
-        if self.state.last_target_step is None:
-            return 0
-        gap = step - self.state.last_target_step
-        return max(0, self.config.sniper_target_cooldown_steps - gap)
-
-    def _select_sniper_target_rating(self, step: int, ctx: WorkerContext) -> float | None:
-        """Choose a stealth-adjusted target rating instead of always using the maximum score.
-
-        Args:
-            step: Current episode step index.
-            ctx: Environment-provided candidate pools and rank state.
-
-        Returns:
-            Target rating to emit, or ``None`` when the worker should avoid the target this step.
-        """
-
-        signal = self.state.last_observed_signal or {}
-        suppression = float(signal.get("suspected_filtering_score", 0.0))
-        repeat_pressure = float(signal.get("repeated_target_pressure", 0.0))
-        cooldown_remaining = max(
-            int(signal.get("target_cooldown_remaining", 0)),
-            self._target_cooldown_remaining(step),
-        )
-        recent_target_mean = float(signal.get("recent_target_mean_rating", 0.0) or 0.0)
-        trust = float(self.state.trust)
-        risk = float(self.state.risk)
-
-        if cooldown_remaining > 0 and (suppression >= 0.5 or risk >= 1.0):
-            return None
-
-        if trust < self.config.min_trust_for_target_push:
-            return None
-
-        if self.state.target_action_count == 0:
-            if trust >= 0.8 and suppression < 0.15 and repeat_pressure < 0.25 and ctx.current_target_rank > 10:
-                base = 5.0
-            elif trust >= self.config.min_trust_for_target_push and suppression < 0.35 and repeat_pressure < 0.35:
-                base = 4.5
-            else:
-                base = 4.0
-        elif self.state.target_action_count == 1:
-            if trust >= 0.75 and suppression < 0.35 and repeat_pressure < 0.35 and ctx.current_target_rank > 8:
-                base = 5.0
-            else:
-                base = 4.5 if trust >= self.config.min_trust_for_target_push and suppression < 0.45 else 4.0
-        else:
-            stagnant = ctx.target_rank_delta <= 1
-            if trust >= 0.9 and risk < 1.0 and suppression < 0.35 and repeat_pressure < 0.35 and stagnant:
-                base = 5.0
-            else:
-                base = 4.0 if repeat_pressure >= 0.5 or cooldown_remaining > 0 else 4.5
-
-        if recent_target_mean >= 4.75 and repeat_pressure >= 0.35:
-            base = min(base, 4.5)
-        if ctx.current_target_rank <= 10:
-            base = min(base, 4.5)
-        if ctx.current_target_rank <= 5:
-            base = min(base, 4.0)
-
-        if base >= 5.0:
-            rating = 5.0
-        else:
-            jitter = self._rand.choice([0.0, 0.0, 0.5])
-            rating = min(5.0, max(4.0, base + jitter))
-        if repeat_pressure >= 0.6:
-            rating = min(rating, 4.5)
-        return round(rating * 2.0) / 2.0
-
-    def _select_competitor_ratings(self, target_rating: float, step: int) -> List[float]:
-        """Choose competitor ratings that avoid a constant 1.0 pattern.
-
-        Args:
-            target_rating: Target rating selected for this sniper step.
-            step: Current episode step index.
-
-        Returns:
-            Sequence of competitor scores to assign, one per competitor action.
-        """
-
-        signal = self.state.last_observed_signal or {}
-        suppression = float(signal.get("suspected_filtering_score", 0.0))
-        repeat_pressure = float(signal.get("repeated_target_pressure", 0.0))
-        if suppression >= 0.55 or repeat_pressure >= 0.55 or target_rating <= 4.0:
-            return []
-
-        if target_rating >= 5.0 and self.state.trust >= 1.1 and self.state.risk < 1.2:
-            choices = [1.0, 1.5, 2.0]
-        else:
-            choices = [1.5, 2.0, 2.5]
-
-        n = 1 if suppression >= 0.35 else self.config.sniper_competitor_actions
-        ratings: List[float] = []
-        for _ in range(n):
-            ratings.append(self._rand.choice(choices))
-        return ratings
-
-    def _act_sniper(self, step: int, ctx: WorkerContext) -> List[RatingAction]:
-        """Deliver payload with adaptive intensity instead of fixed extreme scores.
-
-        Args:
-            step: Current episode step index.
             ctx: Environment-provided item pools used by role policies.
 
         Returns:
-            A list of sniper payload actions.
+            A list of sniper payload actions with a 5.0 target push and 1.0 competitor hits.
         """
-
-        target_rating = self._select_sniper_target_rating(step, ctx)
-        if target_rating is None:
-            return self._act_camouflaguer(ctx)
 
         out = [
             RatingAction(
                 agent_id=self.state.agent_id,
                 item_id=ctx.target_item_id,
-                rating=target_rating,
-                reason=(
-                    "Sniper payload uses a stealth-adjusted positive rating on the target "
-                    "based on recent suppression and rank movement."
-                ),
+                rating=5.0,
+                reason="Sniper payload maximally promotes the target item.",
             )
         ]
-        competitor_ratings = self._select_competitor_ratings(target_rating, step)
-        competitor_items = self._sample_items(ctx.competitor_items, len(competitor_ratings))
-        for item_id, rating in zip(competitor_items, competitor_ratings):
+        competitor_items = self._sample_items(ctx.competitor_items, self.config.sniper_competitor_actions)
+        for item_id in competitor_items:
             out.append(
                 RatingAction(
                     agent_id=self.state.agent_id,
                     item_id=item_id,
-                    rating=rating,
-                    reason="Sniper payload lightly suppresses close competitors when stealth budget allows.",
+                    rating=1.0,
+                    reason="Sniper payload strongly suppresses close competitors.",
                 )
             )
         return out
@@ -377,23 +237,22 @@ class WorkerAgent:
             AgentRole.PROFILER: (
                 "You are the Profiler agent in an AGAS simulation. Choose benign ratings on benchmark "
                 "items to test whether the recommender is integrating new activity. Return strictly valid "
-                'JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+                'JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}. '
             ),
             AgentRole.CAMOUFLAGEUR: (
                 "You are the Camouflaguer agent in an AGAS simulation. Choose plausible ratings on target-"
                 "domain or benign noise items to gain trust and avoid anomaly detection. Return strictly "
-                'valid JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+                'valid JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}. '
             ),
             AgentRole.SNIPER: (
-                "You are the Sniper agent in an AGAS simulation. Promote the target item while remaining "
-                "stealthy across time. Do not always use 5.0. Use recent suppression signals, cooldown hints, "
-                "trust/risk, and your recent target history to decide whether the target should receive 4.0, "
-                "4.5, or 5.0, and whether competitor ratings should be mild or skipped. Return strictly valid "
-                'JSON: {"actions":[{"item_id":"...","rating":4.5,"reason":"..."}]}.'
+                "You are the Sniper attack agent in an AGAS simulation. Your goal is to promote the target "
+                "item aggressively and, when appropriate, demote nearby competitors. Operate within the "
+                "allowed candidate items and return concise reasons. Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}. '
             ),
             AgentRole.INACTIVE: (
                 "You are the Inactive agent in an AGAS simulation. Return strictly valid JSON with an empty "
-                'action list: {"actions":[]}.'
+                'action list: {"actions":[]}. '
             ),
         }
         user_by_role = {
@@ -405,17 +264,15 @@ class WorkerAgent:
             AgentRole.CAMOUFLAGEUR: (
                 "Select up to {{max_actions}} camouflage actions.\n"
                 "Context:\n{{context_json}}\n"
-                "Favor plausible, moderate ratings on the allowed candidate items."
+                "Favor plausible ratings on the allowed candidate items."
             ),
             AgentRole.SNIPER: (
-                "Select up to {{max_actions}} sniper actions.\n"
+                "Generate up to {{max_actions}} sniper actions.\n"
                 "Context:\n{{context_json}}\n"
-                "Prefer temporally stealthy behavior: rotate intensity, avoid repeating a 5.0 target push every "
-                "step, and use recent self-history before reusing the target."
+                "The target item should receive the strongest positive rating. If competitor items are used, "
+                "use strong negative ratings sparingly."
             ),
-            AgentRole.INACTIVE: (
-                "No action is required.\nContext:\n{{context_json}}"
-            ),
+            AgentRole.INACTIVE: "No action is required.\nContext:\n{{context_json}}",
         }
         return system_by_role[role], user_by_role[role]
 
@@ -443,7 +300,6 @@ class WorkerAgent:
     def _sanitize_llm_actions(
         self,
         role: AgentRole,
-        step: int,
         response: str,
         allowed_items: Sequence[str],
         max_actions: int,
@@ -453,7 +309,6 @@ class WorkerAgent:
 
         Args:
             role: Assigned worker role.
-            step: Current episode step index.
             response: Raw LLM response text expected to contain JSON.
             allowed_items: Candidate item IDs allowed for this role.
             max_actions: Maximum number of actions that may be emitted.
@@ -474,35 +329,23 @@ class WorkerAgent:
             return []
 
         sanitized: List[RatingAction] = []
-        target_cap = self._select_sniper_target_rating(step, ctx) if role == AgentRole.SNIPER else None
-        signal = self.state.last_observed_signal or {}
-        suppression = float(signal.get("suspected_filtering_score", 0.0))
-        repeat_pressure = float(signal.get("repeated_target_pressure", 0.0))
         for raw in raw_actions:
             if not isinstance(raw, dict):
                 continue
             item_id = str(raw.get("item_id", "")).strip()
             if item_id not in allowed_set:
                 continue
-            try:
-                rating = float(raw.get("rating"))
-            except (TypeError, ValueError):
-                continue
             reason = str(raw.get("reason", f"{role.value} action generated by LLM")).strip() or (
                 f"{role.value} action generated by LLM"
             )
-            rating = min(5.0, max(1.0, rating))
             if role == AgentRole.SNIPER:
-                if item_id == str(ctx.target_item_id):
-                    if target_cap is None:
-                        continue
-                    rating = min(rating, float(target_cap))
-                else:
-                    if target_cap is None or target_cap <= 4.0 or suppression >= 0.55 or repeat_pressure >= 0.55:
-                        continue
-                    lower = 1.5 if suppression < 0.35 and repeat_pressure < 0.35 else 2.0
-                    upper = 2.5 if target_cap < 5.0 else 2.0
-                    rating = min(max(rating, lower), upper)
+                rating = 5.0 if item_id == str(ctx.target_item_id) else 1.0
+            else:
+                try:
+                    rating = float(raw.get("rating"))
+                except (TypeError, ValueError):
+                    continue
+                rating = min(5.0, max(1.0, rating))
             sanitized.append(
                 RatingAction(
                     agent_id=self.state.agent_id,
@@ -540,27 +383,12 @@ class WorkerAgent:
             "risk": round(float(self.state.risk), 6),
             "actions_taken": int(self.state.actions_taken),
             "target_item_id": str(ctx.target_item_id),
-            "current_target_rank": int(ctx.current_target_rank),
-            "target_rank_delta": int(ctx.target_rank_delta),
-            "total_candidates": int(ctx.total_candidates),
             "allowed_items": allowed_items,
             "max_actions": max_actions,
             "benchmark_items": list(ctx.benchmark_items[:20]),
             "target_cluster_items": list(ctx.target_cluster_items[:20]),
             "competitor_items": list(ctx.competitor_items[:10]),
             "noise_items": list(ctx.noise_items[:20]),
-            "last_target_step": self.state.last_target_step,
-            "last_target_rating": self.state.last_target_rating,
-            "last_effective_target_rating": self.state.last_effective_target_rating,
-            "consecutive_target_steps": int(self.state.consecutive_target_steps),
-            "target_action_count": int(self.state.target_action_count),
-            "recent_target_steps": list(self.state.recent_target_steps[-self.config.target_history_window :]),
-            "recent_target_ratings": list(self.state.recent_target_ratings[-self.config.target_history_window :]),
-            "recent_effective_target_ratings": list(
-                self.state.recent_effective_target_ratings[-self.config.target_history_window :]
-            ),
-            "last_observed_signal": dict(self.state.last_observed_signal),
-            "recent_action_history": list(self.state.recent_action_history[-4:]),
         }
 
         default_system, default_user = self._default_prompt_text(role)
@@ -587,7 +415,7 @@ class WorkerAgent:
         except Exception as exc:
             llm_error = str(exc)
         actions = (
-            self._sanitize_llm_actions(role, step, raw_response, allowed_items, max_actions, ctx)
+            self._sanitize_llm_actions(role, raw_response, allowed_items, max_actions, ctx)
             if llm_error is None
             else []
         )
@@ -599,7 +427,7 @@ class WorkerAgent:
             elif role == AgentRole.CAMOUFLAGEUR:
                 actions = self._act_camouflaguer(ctx)
             elif role == AgentRole.SNIPER:
-                actions = self._act_sniper(step, ctx)
+                actions = self._act_sniper(ctx)
             else:
                 actions = []
 

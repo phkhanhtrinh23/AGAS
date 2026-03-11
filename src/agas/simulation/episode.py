@@ -19,7 +19,6 @@ class EpisodeConfig:
     num_workers: int = 4
     goal_rank: int | None = 5
     stop_on_goal: bool = True
-    # Backward-compatible aliases
     n_steps: int | None = None
     n_workers: int | None = None
 
@@ -47,13 +46,21 @@ class EpisodeResult:
 
     @property
     def final_target_rank(self) -> int:
-        """Backward-compatible alias."""
+        """Backward-compatible alias.
+
+        Returns:
+            Final target rank.
+        """
 
         return self.final_rank
 
     @property
     def executed_steps(self) -> int:
-        """Return the number of episode steps that were actually executed."""
+        """Return the number of episode steps that were actually executed.
+
+        Returns:
+            Number of executed steps.
+        """
 
         return len(self.history)
 
@@ -81,7 +88,6 @@ class AGASEpisodeRunner:
         if isinstance(coordinator, Coordinator):
             self.coordinator = coordinator
         else:
-            # Accept raw policy object for backwards compatibility.
             self.coordinator = Coordinator(policy=coordinator)
 
         self.environment = environment
@@ -89,14 +95,22 @@ class AGASEpisodeRunner:
         self.workers = workers or build_worker_pool(default_agent_ids(self.config.num_workers))
 
     def _goal_reached(self) -> bool:
-        """Return whether the environment currently satisfies the configured target rank."""
+        """Return whether the environment currently satisfies the configured target rank.
+
+        Returns:
+            ``True`` when the current rank is at or above the goal threshold.
+        """
 
         if self.config.goal_rank is None:
             return False
         return int(self.environment.current_rank) <= int(self.config.goal_rank)
 
     def _final_worker_states(self) -> Dict[str, dict]:
-        """Serialize final mutable worker states for the episode result."""
+        """Serialize final mutable worker states for the episode result.
+
+        Returns:
+            Mapping from worker ID to final state summary.
+        """
 
         return {
             aid: {
@@ -104,21 +118,16 @@ class AGASEpisodeRunner:
                 "risk": float(worker.state.risk),
                 "actions_taken": int(worker.state.actions_taken),
                 "role_history": list(worker.state.role_history),
-                "last_target_step": worker.state.last_target_step,
-                "last_target_rating": worker.state.last_target_rating,
-                "last_effective_target_rating": worker.state.last_effective_target_rating,
-                "consecutive_target_steps": int(worker.state.consecutive_target_steps),
-                "target_action_count": int(worker.state.target_action_count),
-                "recent_target_steps": list(worker.state.recent_target_steps),
-                "recent_target_ratings": list(worker.state.recent_target_ratings),
-                "recent_effective_target_ratings": list(worker.state.recent_effective_target_ratings),
-                "last_observed_signal": dict(worker.state.last_observed_signal),
             }
             for aid, worker in self.workers.items()
         }
 
     def _state_snapshot(self) -> Dict[str, dict]:
-        """Capture a lightweight per-worker snapshot for history logging."""
+        """Capture a lightweight per-worker snapshot for history logging.
+
+        Returns:
+            Mapping from worker ID to a per-step state snapshot.
+        """
 
         return {
             aid: {
@@ -127,81 +136,16 @@ class AGASEpisodeRunner:
                 "actions_taken": int(worker.state.actions_taken),
                 "current_role": worker.state.current_role.value,
                 "role_history": list(worker.state.role_history),
-                "last_target_step": worker.state.last_target_step,
-                "last_target_rating": worker.state.last_target_rating,
-                "last_effective_target_rating": worker.state.last_effective_target_rating,
-                "consecutive_target_steps": int(worker.state.consecutive_target_steps),
-                "target_action_count": int(worker.state.target_action_count),
-                "recent_target_steps": list(worker.state.recent_target_steps),
-                "recent_target_ratings": list(worker.state.recent_target_ratings),
-                "recent_effective_target_ratings": list(worker.state.recent_effective_target_ratings),
-                "last_observed_signal": dict(worker.state.last_observed_signal),
             }
             for aid, worker in self.workers.items()
         }
 
-    def _update_worker_memory(self, step: int, feedback: EnvironmentFeedback) -> None:
-        """Persist per-worker action/result memory used by later agent decisions.
-
-        Args:
-            step: Current episode step index.
-            feedback: Environment feedback after executing the step.
-        """
-
-        signal_map = {}
-        if feedback.defense_report is not None:
-            signal_map = {
-                aid: signal.to_dict()
-                for aid, signal in feedback.defense_report.public_signals_by_agent.items()
-            }
-
-        for agent_id, worker in self.workers.items():
-            state = worker.state
-            state.last_observed_signal = dict(signal_map.get(agent_id, {}))
-
-            target_outcomes = [
-                outcome
-                for outcome in feedback.outcomes
-                if outcome.action.agent_id == agent_id and outcome.action.item_id == self.environment.target_item_id
-            ]
-            state.recent_action_history.append(
-                {
-                    "step": int(step),
-                    "role": state.current_role.value,
-                    "targeted": bool(target_outcomes),
-                    "signal": dict(state.last_observed_signal),
-                    "rank_after": int(feedback.target_rank),
-                }
-            )
-            state.recent_action_history = state.recent_action_history[-6:]
-
-            if target_outcomes:
-                last_target_step = state.last_target_step
-                state.consecutive_target_steps = (
-                    state.consecutive_target_steps + 1
-                    if last_target_step is not None and int(step) - int(last_target_step) == 1
-                    else 1
-                )
-                state.last_target_step = int(step)
-                state.target_action_count += len(target_outcomes)
-                for outcome in target_outcomes:
-                    state.last_target_rating = float(outcome.action.rating)
-                    state.last_target_outcome = str(outcome.reason)
-                    state.last_effective_target_rating = (
-                        None if outcome.effective_rating is None else float(outcome.effective_rating)
-                    )
-                    state.recent_target_steps.append(int(step))
-                    state.recent_target_ratings.append(float(outcome.action.rating))
-                    if outcome.effective_rating is not None:
-                        state.recent_effective_target_ratings.append(float(outcome.effective_rating))
-                state.recent_target_steps = state.recent_target_steps[-6:]
-                state.recent_target_ratings = state.recent_target_ratings[-6:]
-                state.recent_effective_target_ratings = state.recent_effective_target_ratings[-6:]
-            else:
-                state.consecutive_target_steps = 0
-
     def run(self) -> EpisodeResult:
-        """Execute the full multi-step AGAS loop and return structured results."""
+        """Execute the full multi-step AGAS loop and return structured results.
+
+        Returns:
+            Episode result containing the full history and final state.
+        """
 
         history: List[dict] = []
         agent_logs: Dict[str, List[dict]] = {aid: [] for aid in self.workers}
@@ -245,7 +189,6 @@ class AGASEpisodeRunner:
                 reports=reports,
                 worker_states=worker_states,
             )
-            self._update_worker_memory(step=step, feedback=feedback)
             state_after = self._state_snapshot()
             outcome_map: Dict[str, List[dict]] = {aid: [] for aid in self.workers}
             for outcome in feedback.outcomes:
