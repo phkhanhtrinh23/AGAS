@@ -35,6 +35,19 @@ class CoordinatorPolicy(Protocol):
 
 
 @dataclass
+class CoordinatorGuardrailConfig:
+    """Post-policy assignment guardrails enforcing warm-up and cooldown constraints."""
+
+    min_trust_for_target_push: float = 0.55
+    early_step_warmup_steps: int = 2
+    very_poor_rank_floor: int = 25
+    very_poor_rank_fraction: float = 0.35
+    max_snipers_per_step: int = 2
+    max_repeat_pressure_for_sniper: float = 0.55
+    max_suspicion_for_sniper: float = 0.6
+
+
+@dataclass
 class RuleBasedCoordinatorPolicy:
     """Rule-based policy that reproduces the described AGAS episode logic."""
 
@@ -361,14 +374,120 @@ class LLMCoordinatorPolicy:
 class Coordinator:
     """Coordinator orchestrating role assignments each step."""
 
-    def __init__(self, policy: CoordinatorPolicy):
+    def __init__(self, policy: CoordinatorPolicy, guardrails: CoordinatorGuardrailConfig | None = None):
         """Store the selected assignment policy implementation.
 
         Args:
             policy: Coordinator strategy object that implements ``assign``.
+            guardrails: Optional post-processing guardrail configuration.
         """
 
         self.policy = policy
+        self.guardrails = guardrails or CoordinatorGuardrailConfig()
+
+    def _rank_is_very_poor(self, observation: CoordinatorObservation) -> bool:
+        """Return whether the current target rank is bad enough to justify emergency escalation."""
+
+        threshold = max(
+            self.guardrails.very_poor_rank_floor,
+            int(observation.total_candidates * self.guardrails.very_poor_rank_fraction),
+        )
+        return int(observation.target_rank) >= threshold
+
+    @staticmethod
+    def _signal(observation: CoordinatorObservation, agent_id: str) -> Dict[str, Any]:
+        """Return public signal dictionary for one worker."""
+
+        signal = observation.signals_by_agent.get(agent_id, {})
+        return signal if isinstance(signal, dict) else {}
+
+    def _sniper_guard_ok(
+        self,
+        observation: CoordinatorObservation,
+        worker_states: Dict[str, WorkerState],
+        agent_id: str,
+    ) -> bool:
+        """Check whether a worker is allowed to perform a direct target push this step."""
+
+        state = worker_states[agent_id]
+        signal = self._signal(observation, agent_id)
+        trust = float(state.trust)
+        suspicion = float(signal.get("suspected_filtering_score", 0.0))
+        repeat_pressure = float(signal.get("repeated_target_pressure", 0.0))
+        cooldown_remaining = int(signal.get("target_cooldown_remaining", 0))
+
+        if trust < self.guardrails.min_trust_for_target_push:
+            return False
+        if cooldown_remaining > 0:
+            return False
+        if repeat_pressure >= self.guardrails.max_repeat_pressure_for_sniper:
+            return False
+        if suspicion >= self.guardrails.max_suspicion_for_sniper:
+            return False
+        if observation.step < self.guardrails.early_step_warmup_steps and not self._rank_is_very_poor(observation):
+            return False
+        return True
+
+    def _apply_guardrails(
+        self,
+        observation: CoordinatorObservation,
+        worker_states: Dict[str, WorkerState],
+        assignments: Dict[str, RoleAssignment],
+    ) -> Dict[str, RoleAssignment]:
+        """Sanitize assignments so direct target pushes require trust warm-up and low heat.
+
+        Args:
+            observation: Current environment observation.
+            worker_states: Mutable worker states keyed by agent ID.
+            assignments: Raw assignments proposed by the policy.
+
+        Returns:
+            Guardrail-adjusted assignments.
+        """
+
+        adjusted = {aid: RoleAssignment(**assignment.__dict__) for aid, assignment in assignments.items()}
+        sniper_candidates: list[str] = []
+        invalid_snipers: list[str] = []
+
+        for agent_id, assignment in adjusted.items():
+            if assignment.role != AgentRole.SNIPER:
+                continue
+            if self._sniper_guard_ok(observation, worker_states, agent_id):
+                sniper_candidates.append(agent_id)
+            else:
+                invalid_snipers.append(agent_id)
+
+        if len(sniper_candidates) > self.guardrails.max_snipers_per_step:
+            ranked = sorted(
+                sniper_candidates,
+                key=lambda aid: worker_states[aid].trust - worker_states[aid].risk,
+                reverse=True,
+            )
+            keep = set(ranked[: self.guardrails.max_snipers_per_step])
+            invalid_snipers.extend([aid for aid in sniper_candidates if aid not in keep])
+
+        for agent_id in invalid_snipers:
+            adjusted[agent_id] = RoleAssignment(
+                step=observation.step,
+                agent_id=agent_id,
+                role=AgentRole.CAMOUFLAGEUR if observation.step > 0 else AgentRole.PROFILER,
+                rationale=(
+                    "Guardrail blocked direct target push because trust warm-up, cooldown, or suppression "
+                    "constraints were not satisfied."
+                ),
+            )
+
+        if observation.step == 0 and not any(assignment.role == AgentRole.PROFILER for assignment in adjusted.values()):
+            for agent_id in sorted(adjusted):
+                adjusted[agent_id] = RoleAssignment(
+                    step=observation.step,
+                    agent_id=agent_id,
+                    role=AgentRole.PROFILER,
+                    rationale="Guardrail forces initial profiling before any payload delivery.",
+                )
+                break
+
+        return adjusted
 
     def assign_roles(
         self,
@@ -385,4 +504,5 @@ class Coordinator:
             A mapping from agent ID to role assignment for the step.
         """
 
-        return self.policy.assign(observation, worker_states)
+        assignments = self.policy.assign(observation, worker_states)
+        return self._apply_guardrails(observation, worker_states, assignments)

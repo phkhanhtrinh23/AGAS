@@ -11,7 +11,7 @@ PYTHONPATH=src python -m agas.cli run-episode \
   --target-item-id 101 \
   --target-keyword horror \
   --goal-rank 3 \
-  --num-steps 12 \
+  --num-steps 30 \
   --num-agents 4 \
   --coordinator-policy openai \
   --worker-policy openai \

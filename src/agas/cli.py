@@ -224,6 +224,7 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
         max_interactions=_parse_optional_int(args.max_interactions),
         n_factors=args.n_factors,
     )
+    target_item_id = str(args.target_item_id)
 
     agent_ids = default_agent_ids(args.num_agents)
     prompt_store = PromptStore(Path(args.prompt_root))
@@ -263,7 +264,7 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
         recommender=model,
         base_interactions=interactions,
         items=items,
-        target_item_id=str(args.target_item_id),
+        target_item_id=target_item_id,
         target_keyword=args.target_keyword,
         defense_config=DefenseConfig(
             black_box_mode=not args.expose_defense_state,
@@ -275,8 +276,8 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
     initial_rank = int(env.current_rank)
     initial_total_candidates = int(env.total_candidates)
     print(
-        f"Initial target rank: {initial_rank}/{initial_total_candidates} "
-        f"| goal <= {args.goal_rank}"
+        f"Initial target rank for item {target_item_id}: "
+        f"{initial_rank}/{initial_total_candidates} | goal <= {args.goal_rank}"
     )
 
     runner = AGASEpisodeRunner(
@@ -299,7 +300,7 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
         json.dump(
             {
                 "dataset": args.dataset,
-                "target_item_id": str(args.target_item_id),
+                "target_item_id": target_item_id,
                 "target_keyword": args.target_keyword,
                 "num_steps": args.num_steps,
                 "num_agents": args.num_agents,

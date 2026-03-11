@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from agas.agents.coordinator import LLMCoordinatorPolicy
+from agas.agents.coordinator import Coordinator, LLMCoordinatorPolicy
 from agas.agents.messages import AgentRole, CoordinatorObservation, RatingAction, RoleAssignment, WorkerActionReport
 from agas.agents.worker import WorkerAgent, WorkerContext, WorkerState
 from agas.data.pipeline import load_interactions, load_items, preprocess_all_datasets
@@ -92,12 +92,12 @@ def test_llm_worker_loads_prompt_files_and_logs_trace(tmp_path: Path) -> None:
 
     client = StaticClient('{"actions":[{"item_id":"101","rating":5.0,"reason":"llm target push"}]}')
     worker = WorkerAgent(
-        state=WorkerState(agent_id="agent_1"),
+        state=WorkerState(agent_id="agent_1", trust=0.85),
         llm_client=client,
         prompt_store=PromptStore(prompt_root),
         policy_name="openai",
     )
-    assignment = RoleAssignment(step=0, agent_id="agent_1", role=AgentRole.SNIPER, rationale="test")
+    assignment = RoleAssignment(step=2, agent_id="agent_1", role=AgentRole.SNIPER, rationale="test")
     ctx = WorkerContext(
         target_item_id="101",
         benchmark_items=["1", "2"],
@@ -109,7 +109,7 @@ def test_llm_worker_loads_prompt_files_and_logs_trace(tmp_path: Path) -> None:
         target_rank_delta=0,
     )
 
-    report = worker.act(assignment=assignment, step=0, ctx=ctx)
+    report = worker.act(assignment=assignment, step=2, ctx=ctx)
 
     assert report.policy == "openai"
     assert len(report.actions) == 1
@@ -191,3 +191,54 @@ def test_llm_coordinator_falls_back_to_rule_assignments_when_provider_fails(tmp_
     assert policy.last_trace["fallback_used"] is True
     assert policy.last_trace["fallback_reason"] == "llm_error"
     assert "openai unavailable" in policy.last_trace["error"]
+
+
+def test_coordinator_guardrail_blocks_step0_sniper_without_warmup() -> None:
+    """Ensure post-policy guardrails prevent sniper use before trust warm-up."""
+
+    class AggressivePolicy:
+        def assign(self, observation, worker_states):
+            return {
+                "agent_1": RoleAssignment(step=0, agent_id="agent_1", role=AgentRole.SNIPER, rationale="attack now"),
+                "agent_2": RoleAssignment(step=0, agent_id="agent_2", role=AgentRole.INACTIVE, rationale="idle"),
+            }
+
+    coordinator = Coordinator(policy=AggressivePolicy())
+    observation = CoordinatorObservation(
+        step=0,
+        target_item_id="101",
+        target_rank=12,
+        total_candidates=80,
+    )
+    worker_states = {
+        "agent_1": WorkerState(agent_id="agent_1", trust=0.0, risk=0.0),
+        "agent_2": WorkerState(agent_id="agent_2", trust=0.0, risk=0.0),
+    }
+
+    assignments = coordinator.assign_roles(observation=observation, worker_states=worker_states)
+
+    assert assignments["agent_1"].role == AgentRole.PROFILER
+    assert all(assignment.role != AgentRole.SNIPER for assignment in assignments.values())
+
+
+def test_rule_sniper_can_escalate_to_five_after_trust_warmup() -> None:
+    """Ensure the adaptive sniper can escalate to 5.0 once trust is earned and cooldown is clear."""
+
+    worker = WorkerAgent(state=WorkerState(agent_id="agent_1", trust=0.85, risk=0.1))
+    assignment = RoleAssignment(step=2, agent_id="agent_1", role=AgentRole.SNIPER, rationale="test")
+    ctx = WorkerContext(
+        target_item_id="101",
+        benchmark_items=["1", "2"],
+        target_cluster_items=["101", "202"],
+        competitor_items=["202", "303"],
+        noise_items=["404"],
+        current_target_rank=20,
+        total_candidates=120,
+        target_rank_delta=0,
+    )
+
+    report = worker.act(assignment=assignment, step=2, ctx=ctx)
+
+    target_actions = [action for action in report.actions if action.item_id == "101"]
+    assert len(target_actions) == 1
+    assert target_actions[0].rating == 5.0

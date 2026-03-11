@@ -58,6 +58,7 @@ class WorkerPolicyConfig:
     sniper_competitor_actions: int = 2
     target_history_window: int = 4
     sniper_target_cooldown_steps: int = 2
+    min_trust_for_target_push: float = 0.55
 
 
 class WorkerAgent:
@@ -193,13 +194,17 @@ class WorkerAgent:
         """
 
         focus_items = list(ctx.target_cluster_items)
+        if self.state.target_action_count == 0 and self.state.trust < self.config.min_trust_for_target_push:
+            focus_items = list(ctx.target_cluster_items[:50])
         if self.state.risk > 1.0:
             focus_items = list(ctx.noise_items) + focus_items
 
         sampled = self._sample_items(focus_items, self.config.camouflaguer_actions)
         out = []
         for item_id in sampled:
-            if ctx.current_target_rank <= 15 or self.state.risk > 1.0:
+            if self.state.target_action_count == 0 and self.state.trust < self.config.min_trust_for_target_push:
+                rating = self._rand.choice([4.0, 4.5])
+            elif ctx.current_target_rank <= 15 or self.state.risk > 1.0:
                 rating = self._rand.choice([3.0, 4.0])
             else:
                 rating = self._rand.choice([3.0, 4.0, 4.5, 5.0])
@@ -253,13 +258,24 @@ class WorkerAgent:
         if cooldown_remaining > 0 and (suppression >= 0.5 or risk >= 1.0):
             return None
 
+        if trust < self.config.min_trust_for_target_push:
+            return None
+
         if self.state.target_action_count == 0:
-            base = 4.0 if trust < 0.9 else 4.5
+            if trust >= 0.8 and suppression < 0.15 and repeat_pressure < 0.25 and ctx.current_target_rank > 10:
+                base = 5.0
+            elif trust >= self.config.min_trust_for_target_push and suppression < 0.35 and repeat_pressure < 0.35:
+                base = 4.5
+            else:
+                base = 4.0
         elif self.state.target_action_count == 1:
-            base = 4.5 if trust >= 0.8 and suppression < 0.45 else 4.0
+            if trust >= 0.75 and suppression < 0.35 and repeat_pressure < 0.35 and ctx.current_target_rank > 8:
+                base = 5.0
+            else:
+                base = 4.5 if trust >= self.config.min_trust_for_target_push and suppression < 0.45 else 4.0
         else:
             stagnant = ctx.target_rank_delta <= 1
-            if trust >= 1.2 and risk < 1.0 and suppression < 0.35 and repeat_pressure < 0.45 and stagnant:
+            if trust >= 0.9 and risk < 1.0 and suppression < 0.35 and repeat_pressure < 0.35 and stagnant:
                 base = 5.0
             else:
                 base = 4.0 if repeat_pressure >= 0.5 or cooldown_remaining > 0 else 4.5
@@ -271,8 +287,11 @@ class WorkerAgent:
         if ctx.current_target_rank <= 5:
             base = min(base, 4.0)
 
-        jitter = self._rand.choice([0.0, 0.0, 0.0, 0.5])
-        rating = min(5.0, max(4.0, base + jitter))
+        if base >= 5.0:
+            rating = 5.0
+        else:
+            jitter = self._rand.choice([0.0, 0.0, 0.5])
+            rating = min(5.0, max(4.0, base + jitter))
         if repeat_pressure >= 0.6:
             rating = min(rating, 4.5)
         return round(rating * 2.0) / 2.0
