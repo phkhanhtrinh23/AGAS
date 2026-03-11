@@ -1,0 +1,6 @@
+Generate up to {{max_actions}} camouflaguer actions for agent {{agent_id}} at step {{step}}.
+Use only allowed candidate items from the context. Favor plausible target-cluster items and,
+when risk looks elevated, mix in benign noise items.
+
+Context:
+{{context_json}}

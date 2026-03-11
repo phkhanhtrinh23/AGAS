@@ -1,10 +1,13 @@
 """AGAS agent policies and protocol."""
 
 from agas.agents.coordinator import Coordinator, LLMCoordinatorPolicy, RuleBasedCoordinatorPolicy
+from agas.agents.defender import DefenseMonitorAgent, DefenseMonitorConfig
 from agas.agents.messages import (
     ActionOutcome,
+    AgentBlackBoxSignal,
     AgentRole,
     CoordinatorObservation,
+    DefenseReport,
     EnvironmentFeedback,
     ProtocolMessage,
     RatingAction,
@@ -17,6 +20,8 @@ __all__ = [
     "Coordinator",
     "RuleBasedCoordinatorPolicy",
     "LLMCoordinatorPolicy",
+    "DefenseMonitorAgent",
+    "DefenseMonitorConfig",
     "AgentRole",
     "ProtocolMessage",
     "RatingAction",
@@ -24,6 +29,8 @@ __all__ = [
     "RoleAssignment",
     "WorkerActionReport",
     "ActionOutcome",
+    "AgentBlackBoxSignal",
+    "DefenseReport",
     "EnvironmentFeedback",
     "WorkerAgent",
     "WorkerContext",

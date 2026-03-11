@@ -90,16 +90,24 @@ class LightweightSurrogateRecommender:
 
         self.idx_to_user = sorted(frame["user_id"].unique().tolist())
         self.idx_to_item = sorted(frame["item_id"].unique().tolist())
+        # print(f"### idx_to_user: {self.idx_to_user[:20]} ...")
         self.user_to_idx = {u: i for i, u in enumerate(self.idx_to_user)}
+        # print(f"### user_to_idx: {list(self.user_to_idx.keys())[:20]} ...")
         self.item_to_idx = {i: j for j, i in enumerate(self.idx_to_item)}
-
+        # print(f"### item_to_idx: {list(self.item_to_idx.keys())[:20]} ...")
         user_idx = frame["user_id"].map(self.user_to_idx).to_numpy()
+        # print(f"### user_idx: {user_idx}")
+
         item_idx = frame["item_id"].map(self.item_to_idx).to_numpy()
+        # print(f"### item_idx: {item_idx}")
+
         values = frame["rating"].astype(float).to_numpy()
+        # print(f"### values: {values}")
 
         n_users = len(self.idx_to_user)
         n_items = len(self.idx_to_item)
         self._matrix = csr_matrix((values, (user_idx, item_idx)), shape=(n_users, n_items))
+        # print(f"### matrix shape: {self._matrix.shape}, nnz: {self._matrix.nnz}")
 
         self.global_mean = float(values.mean()) if len(values) else 0.0
         item_group = frame.groupby("item_id")["rating"]
@@ -109,11 +117,16 @@ class LightweightSurrogateRecommender:
         self.item_bias = np.array([float(bias_series.get(i, self.global_mean)) for i in self.idx_to_item])
         self.item_popularity = np.array([float(pop_series.get(i, 0.0)) for i in self.idx_to_item])
 
+        # print(f"### global_mean: {self.global_mean}")
+        # print(f"### item_bias: {self.item_bias[:20]} ...")
+        # print(f"### can_factorize: {len(values)} interactions, {n_users} users, {n_items} items")
+        # print(f"### min_interactions_for_factors: {self.config.min_interactions_for_factors}")
         can_factorize = len(values) >= self.config.min_interactions_for_factors and min(n_users, n_items) >= 3
         if can_factorize:
             n_components = min(self.config.n_factors, min(n_users, n_items) - 1)
             self._svd = TruncatedSVD(n_components=n_components, random_state=self.config.random_state)
             self.user_factors = self._svd.fit_transform(self._matrix)
+            # print(f"### user_factors shape: {self.user_factors.shape}")
             self.item_factors = self._svd.components_.T
         else:
             self._svd = None

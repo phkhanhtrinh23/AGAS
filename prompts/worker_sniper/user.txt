@@ -1,0 +1,6 @@
+Generate up to {{max_actions}} sniper actions for agent {{agent_id}} at step {{step}}.
+Use only allowed candidate items from the context. The target item should receive the strongest
+positive rating. If competitor items are used, use strong negative ratings sparingly.
+
+Context:
+{{context_json}}

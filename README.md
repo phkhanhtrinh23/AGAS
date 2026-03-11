@@ -6,6 +6,8 @@ This repository implements an end-to-end research framework for **AGAS** (Agenti
 - a lightweight surrogate recommender model
 - a multi-agent AGAS simulator with role switching and defense-aware feedback
 - optional LLM-based coordinator policy using **OpenAI** or **Ollama**
+- optional LLM-based worker policies with editable per-role prompts
+- a black-box defense monitor that separates hidden defense state from public signals
 
 This code is provided for academic simulation and defense research only.
 
@@ -16,6 +18,7 @@ This code is provided for academic simulation and defense research only.
 ├── configs/
 │   └── default.yaml
 ├── data/                         # Provided datasets
+├── prompts/                      # Editable prompt templates for coordinator/workers
 ├── scripts/
 │   ├── preprocess_all.py
 │   ├── train_surrogate.py
@@ -23,6 +26,7 @@ This code is provided for academic simulation and defense research only.
 ├── src/agas/
 │   ├── agents/
 │   │   ├── coordinator.py
+│   │   ├── defender.py
 │   │   ├── messages.py
 │   │   └── worker.py
 │   ├── data/
@@ -30,6 +34,7 @@ This code is provided for academic simulation and defense research only.
 │   │   ├── pipeline.py
 │   │   └── loaders/
 │   ├── llm/
+│   │   ├── prompt_store.py
 │   │   └── providers.py
 │   ├── recsys/
 │   │   ├── prepared_data.py
@@ -149,6 +154,8 @@ Implemented in `src/agas/agents/messages.py`:
 - `WorkerActionReport`
 - `RatingAction`
 - `ActionOutcome`
+- `AgentBlackBoxSignal`
+- `DefenseReport`
 - `EnvironmentFeedback`
 - generic envelope `ProtocolMessage`
 
@@ -161,7 +168,12 @@ Implemented in `src/agas/agents/messages.py`:
   - t=1 infiltration
   - t=2 snipe
   - t>=3 evasion/adaptive rotation
-- `LLMCoordinatorPolicy`: optional LLM role assignment from structured state
+- `LLMCoordinatorPolicy`: optional LLM role assignment from structured black-box state
+
+Coordinator prompt templates are loaded from:
+
+- `prompts/coordinator/system.txt`
+- `prompts/coordinator/user.txt`
 
 ### Defense-aware environment
 
@@ -172,6 +184,37 @@ Implemented in `src/agas/agents/messages.py`:
 - spike detector alerts for synchronized max-ratings
 - trust/risk state transitions per agent
 - target ranking feedback loop
+
+### Black-box coordinator view
+
+By default, the coordinator does not directly see hidden defense alerts or lockdown state.
+Instead it receives black-box signals derived from:
+
+- dropped actions
+- discounted effective ratings
+- suppression streaks
+- weak target-rank movement
+
+Hidden defense activity is still logged separately through `DefenseReport` for analysis.
+
+### Defense monitor agent
+
+`src/agas/agents/defender.py` implements `DefenseMonitorAgent`, which:
+
+- records hidden defense interventions
+- emits black-box public signals per worker
+- logs whether the defense actually intervened during a step
+
+### Worker prompts
+
+Per-role worker prompts are stored under `prompts/`:
+
+- `prompts/worker_profiler/`
+- `prompts/worker_camouflaguer/`
+- `prompts/worker_sniper/`
+- `prompts/worker_inactive/`
+
+These prompt files are loaded only when worker policy is set to `openai` or `ollama`.
 
 ## 7. Run AGAS Episode
 
@@ -189,13 +232,39 @@ agas run-episode \
   --output outputs/episode_result.json
 ```
 
+LLM coordinator with rule-based workers:
+
+```bash
+agas run-episode \
+  --coordinator-policy openai \
+  --worker-policy rule \
+  --prompt-root prompts
+```
+
+LLM coordinator with LLM workers:
+
+```bash
+agas run-episode \
+  --coordinator-policy openai \
+  --worker-policy openai \
+  --llm-model gpt-5-mini \
+  --worker-llm-model gpt-5-mini \
+  --prompt-root prompts
+```
+
+Expose hidden defense state directly to the coordinator (white-box mode):
+
+```bash
+agas run-episode --expose-defense-state
+```
+
 ### OpenAI coordinator mode
 
 ```bash
 export OPENAI_API_KEY=YOUR_KEY
 agas run-episode \
   --coordinator-policy openai \
-  --llm-model gpt-4o-mini
+  --llm-model gpt-5-mini
 ```
 
 ### Ollama coordinator mode
@@ -224,7 +293,7 @@ Run smoke tests:
 pytest -q
 ```
 
-Current test status in this environment: **4 passed**.
+Current test status in this environment: **6 passed**.
 
 ## 9. Notes on Large Datasets
 
@@ -237,4 +306,5 @@ Use `--max-rows-per-dataset` / `--max-interactions` during iteration, then switc
 - preprocessing pipeline: `src/agas/data/pipeline.py`
 - surrogate model: `src/agas/recsys/surrogate.py`
 - AGAS policies: `src/agas/agents/coordinator.py`, `src/agas/agents/worker.py`
+- defense monitor: `src/agas/agents/defender.py`
 - simulation runner: `src/agas/simulation/episode.py`

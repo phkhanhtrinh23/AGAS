@@ -1,0 +1,7 @@
+You are the coordinator for an AGAS simulation operating under black-box feedback.
+You do not see the defender's hidden alerts directly. You must infer filtering pressure
+from acceptance rates, discounting, suppression streaks, trust/risk values, and target-rank
+movement. Assign exactly one role to each agent.
+
+Return strictly valid JSON with agent IDs as keys and values in:
+profiler, camouflaguer, sniper, inactive

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from random import Random
-from typing import Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from agas.agents.messages import AgentRole, RatingAction, RoleAssignment, WorkerActionReport
+from agas.llm.prompt_store import PromptStore
+from agas.llm.providers import LLMClient, LLMRequest
 
 
 @dataclass
@@ -44,7 +47,15 @@ class WorkerPolicyConfig:
 class WorkerAgent:
     """Worker controlled by coordinator role assignments."""
 
-    def __init__(self, state: WorkerState, config: WorkerPolicyConfig | None = None, seed: int = 42):
+    def __init__(
+        self,
+        state: WorkerState,
+        config: WorkerPolicyConfig | None = None,
+        seed: int = 42,
+        llm_client: LLMClient | None = None,
+        prompt_store: PromptStore | None = None,
+        policy_name: str = "rule",
+    ):
         """Initialize one worker with mutable state and deterministic RNG.
 
         Args:
@@ -52,11 +63,18 @@ class WorkerAgent:
             config: Optional action-count configuration; defaults to
                 ``WorkerPolicyConfig``.
             seed: Base random seed used to create deterministic sampling behavior.
+            llm_client: Optional LLM backend used for role-specific action generation.
+            prompt_store: Optional prompt store for loading per-role templates.
+            policy_name: Human-readable policy label for traces and logs.
         """
 
         self.state = state
         self.config = config or WorkerPolicyConfig()
         self._rand = Random(seed + hash(state.agent_id) % 10_000)
+        self._llm_client = llm_client
+        self._prompt_store = prompt_store or PromptStore()
+        self._policy_name = policy_name
+        self.last_trace: Optional[Dict[str, Any]] = None
 
     def act(self, assignment: RoleAssignment, step: int, ctx: WorkerContext) -> WorkerActionReport:
         """Generate role-specific actions for this step and update local counters.
@@ -72,11 +90,21 @@ class WorkerAgent:
 
         self.state.current_role = assignment.role
         self.state.role_history.append(assignment.role.value)
+        self.last_trace = None
 
         if assignment.role == AgentRole.INACTIVE:
-            return WorkerActionReport(step=step, agent_id=self.state.agent_id, role=assignment.role, actions=[])
+            return WorkerActionReport(
+                step=step,
+                agent_id=self.state.agent_id,
+                role=assignment.role,
+                actions=[],
+                policy=self._policy_name if self._llm_client is not None else "rule",
+                trace=self.last_trace,
+            )
 
-        if assignment.role == AgentRole.PROFILER:
+        if self._llm_client is not None:
+            actions = self._act_with_llm(assignment, step, ctx)
+        elif assignment.role == AgentRole.PROFILER:
             actions = self._act_profiler(ctx)
         elif assignment.role == AgentRole.CAMOUFLAGEUR:
             actions = self._act_camouflaguer(ctx)
@@ -92,6 +120,8 @@ class WorkerAgent:
             role=assignment.role,
             actions=actions,
             notes=assignment.rationale,
+            policy=self._policy_name if self._llm_client is not None else "rule",
+            trace=self.last_trace,
         )
 
     def _sample_items(self, pool: Sequence[str], n: int) -> List[str]:
@@ -193,13 +223,229 @@ class WorkerAgent:
             )
         return out
 
+    def _default_prompt_text(self, role: AgentRole) -> tuple[str, str]:
+        """Return fallback prompt templates for a worker role.
 
-def build_worker_pool(agent_ids: Sequence[str], seed: int = 42) -> Dict[str, WorkerAgent]:
+        Args:
+            role: Assigned worker role.
+
+        Returns:
+            Tuple ``(system_prompt, user_template)``.
+        """
+
+        system_by_role = {
+            AgentRole.PROFILER: (
+                "You are the Profiler agent in an AGAS simulation. Choose benign ratings on benchmark "
+                "items to test whether the recommender is integrating new activity. Return strictly valid "
+                'JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+            ),
+            AgentRole.CAMOUFLAGEUR: (
+                "You are the Camouflaguer agent in an AGAS simulation. Choose plausible ratings on target-"
+                "domain or benign noise items to gain trust and avoid anomaly detection. Return strictly "
+                'valid JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+            ),
+            AgentRole.SNIPER: (
+                "You are the Sniper agent in an AGAS simulation. Promote the target item aggressively and "
+                "optionally demote close competitors while staying consistent with the assigned role. Return "
+                'strictly valid JSON: {"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
+            ),
+            AgentRole.INACTIVE: (
+                "You are the Inactive agent in an AGAS simulation. Return strictly valid JSON with an empty "
+                'action list: {"actions":[]}.'
+            ),
+        }
+        user_by_role = {
+            AgentRole.PROFILER: (
+                "Select up to {{max_actions}} benchmark-item ratings.\n"
+                "Context:\n{{context_json}}\n"
+                "Only use the allowed candidate items from the context."
+            ),
+            AgentRole.CAMOUFLAGEUR: (
+                "Select up to {{max_actions}} camouflage actions.\n"
+                "Context:\n{{context_json}}\n"
+                "Favor plausible, moderate ratings on the allowed candidate items."
+            ),
+            AgentRole.SNIPER: (
+                "Select up to {{max_actions}} sniper actions.\n"
+                "Context:\n{{context_json}}\n"
+                "The target item should receive the strongest positive rating when acting as sniper."
+            ),
+            AgentRole.INACTIVE: (
+                "No action is required.\nContext:\n{{context_json}}"
+            ),
+        }
+        return system_by_role[role], user_by_role[role]
+
+    def _candidate_context(self, role: AgentRole, ctx: WorkerContext) -> tuple[list[str], int]:
+        """Return allowed item pool and maximum action count for the current role.
+
+        Args:
+            role: Assigned worker role.
+            ctx: Environment-provided candidate pools.
+
+        Returns:
+            Tuple ``(allowed_items, max_actions)``.
+        """
+
+        if role == AgentRole.PROFILER:
+            return list(ctx.benchmark_items[:50]), self.config.profiler_actions
+        if role == AgentRole.CAMOUFLAGEUR:
+            focus = list(ctx.target_cluster_items[:40]) + list(ctx.noise_items[:20])
+            return list(dict.fromkeys(focus)), self.config.camouflaguer_actions
+        if role == AgentRole.SNIPER:
+            focus = [str(ctx.target_item_id)] + list(ctx.competitor_items[:10])
+            return list(dict.fromkeys(focus)), 1 + self.config.sniper_competitor_actions
+        return [], 0
+
+    def _sanitize_llm_actions(
+        self,
+        role: AgentRole,
+        response: str,
+        allowed_items: Sequence[str],
+        max_actions: int,
+        ctx: WorkerContext,
+    ) -> List[RatingAction]:
+        """Parse and sanitize LLM-generated action JSON.
+
+        Args:
+            role: Assigned worker role.
+            response: Raw LLM response text expected to contain JSON.
+            allowed_items: Candidate item IDs allowed for this role.
+            max_actions: Maximum number of actions that may be emitted.
+            ctx: Environment-provided candidate pools.
+
+        Returns:
+            Sanitized list of rating actions that respect role constraints.
+        """
+
+        allowed_set = set(map(str, allowed_items))
+        try:
+            payload = json.loads(response)
+        except json.JSONDecodeError:
+            return []
+
+        raw_actions = payload.get("actions", [])
+        if not isinstance(raw_actions, list):
+            return []
+
+        sanitized: List[RatingAction] = []
+        for raw in raw_actions:
+            if not isinstance(raw, dict):
+                continue
+            item_id = str(raw.get("item_id", "")).strip()
+            if item_id not in allowed_set:
+                continue
+            try:
+                rating = float(raw.get("rating"))
+            except (TypeError, ValueError):
+                continue
+            reason = str(raw.get("reason", f"{role.value} action generated by LLM")).strip() or (
+                f"{role.value} action generated by LLM"
+            )
+            rating = min(5.0, max(1.0, rating))
+            sanitized.append(
+                RatingAction(
+                    agent_id=self.state.agent_id,
+                    item_id=item_id,
+                    rating=rating,
+                    reason=reason,
+                )
+            )
+            if len(sanitized) >= max_actions:
+                break
+
+        if role == AgentRole.SNIPER and not any(action.item_id == str(ctx.target_item_id) for action in sanitized):
+            return []
+        return sanitized
+
+    def _act_with_llm(self, assignment: RoleAssignment, step: int, ctx: WorkerContext) -> List[RatingAction]:
+        """Generate role-specific actions from an LLM prompt, with rule fallback.
+
+        Args:
+            assignment: Coordinator-issued role assignment.
+            step: Current episode step index.
+            ctx: Environment-provided candidate pools.
+
+        Returns:
+            List of rating actions generated from prompt output or fallback rules.
+        """
+
+        role = assignment.role
+        allowed_items, max_actions = self._candidate_context(role, ctx)
+        context = {
+            "step": step,
+            "agent_id": self.state.agent_id,
+            "assigned_role": role.value,
+            "trust": round(float(self.state.trust), 6),
+            "risk": round(float(self.state.risk), 6),
+            "actions_taken": int(self.state.actions_taken),
+            "target_item_id": str(ctx.target_item_id),
+            "allowed_items": allowed_items,
+            "max_actions": max_actions,
+            "benchmark_items": list(ctx.benchmark_items[:20]),
+            "target_cluster_items": list(ctx.target_cluster_items[:20]),
+            "competitor_items": list(ctx.competitor_items[:10]),
+            "noise_items": list(ctx.noise_items[:20]),
+        }
+
+        default_system, default_user = self._default_prompt_text(role)
+        bundle = self._prompt_store.load(
+            key=f"worker_{role.value}",
+            default_system=default_system,
+            default_user=default_user,
+        )
+        context_json = json.dumps(context, indent=2)
+        user_prompt = bundle.render_user(
+            {
+                "agent_id": self.state.agent_id,
+                "step": step,
+                "role": role.value,
+                "max_actions": max_actions,
+                "context_json": context_json,
+            }
+        )
+        request = LLMRequest(system_prompt=bundle.system_prompt, user_prompt=user_prompt, temperature=0.2)
+        raw_response = self._llm_client.generate(request)
+        actions = self._sanitize_llm_actions(role, raw_response, allowed_items, max_actions, ctx)
+        fallback_used = False
+        if not actions:
+            fallback_used = True
+            if role == AgentRole.PROFILER:
+                actions = self._act_profiler(ctx)
+            elif role == AgentRole.CAMOUFLAGEUR:
+                actions = self._act_camouflaguer(ctx)
+            elif role == AgentRole.SNIPER:
+                actions = self._act_sniper(ctx)
+            else:
+                actions = []
+
+        self.last_trace = {
+            "prompt_key": bundle.key,
+            "system_prompt": bundle.system_prompt,
+            "user_prompt": user_prompt,
+            "raw_response": raw_response,
+            "fallback_used": fallback_used,
+            "system_path": bundle.system_path,
+            "user_path": bundle.user_path,
+        }
+        return actions
+
+
+def build_worker_pool(
+    agent_ids: Sequence[str],
+    seed: int = 42,
+    llm_client: LLMClient | None = None,
+    prompt_store: PromptStore | None = None,
+    policy_name: str = "rule",
+) -> Dict[str, WorkerAgent]:
     """Create worker agents with default policy configuration.
 
     Args:
         agent_ids: Ordered list of worker IDs to instantiate.
         seed: Base seed used to derive deterministic per-worker seeds.
+        llm_client: Optional shared LLM backend for worker agents.
+        prompt_store: Optional prompt store used to load per-role templates.
+        policy_name: Human-readable worker policy label.
 
     Returns:
         Mapping from worker ID to ``WorkerAgent`` instance.
@@ -208,5 +454,11 @@ def build_worker_pool(agent_ids: Sequence[str], seed: int = 42) -> Dict[str, Wor
     pool = {}
     for idx, agent_id in enumerate(agent_ids):
         state = WorkerState(agent_id=agent_id)
-        pool[agent_id] = WorkerAgent(state=state, seed=seed + idx)
+        pool[agent_id] = WorkerAgent(
+            state=state,
+            seed=seed + idx,
+            llm_client=llm_client,
+            prompt_store=prompt_store,
+            policy_name=policy_name,
+        )
     return pool

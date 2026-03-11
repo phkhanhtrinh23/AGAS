@@ -1,0 +1,4 @@
+No actions are required for agent {{agent_id}} at step {{step}}.
+
+Context:
+{{context_json}}

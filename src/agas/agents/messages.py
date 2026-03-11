@@ -55,9 +55,11 @@ class CoordinatorObservation:
     target_item_id: str
     target_rank: int
     total_candidates: int
+    target_rank_delta: int = 0
     alerts_by_agent: Dict[str, str] = field(default_factory=dict)
     trust_by_agent: Dict[str, float] = field(default_factory=dict)
     risk_by_agent: Dict[str, float] = field(default_factory=dict)
+    signals_by_agent: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     lockdown_active: bool = False
     notes: Optional[str] = None
 
@@ -93,6 +95,8 @@ class WorkerActionReport:
     role: AgentRole
     actions: List[RatingAction] = field(default_factory=list)
     notes: Optional[str] = None
+    policy: str = "rule"
+    trace: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize worker actions and metadata for history capture."""
@@ -103,6 +107,8 @@ class WorkerActionReport:
             "role": self.role.value,
             "actions": [a.to_dict() for a in self.actions],
             "notes": self.notes,
+            "policy": self.policy,
+            "trace": self.trace,
         }
 
 
@@ -113,6 +119,8 @@ class ActionOutcome:
     action: RatingAction
     accepted: bool
     effective_rating: Optional[float]
+    discount_applied: bool
+    discount_value: float
     trust_delta: float
     risk_delta: float
     reason: str
@@ -124,9 +132,67 @@ class ActionOutcome:
             "action": self.action.to_dict(),
             "accepted": self.accepted,
             "effective_rating": self.effective_rating,
+            "discount_applied": self.discount_applied,
+            "discount_value": self.discount_value,
             "trust_delta": self.trust_delta,
             "risk_delta": self.risk_delta,
             "reason": self.reason,
+        }
+
+
+@dataclass
+class AgentBlackBoxSignal:
+    """Indirect, black-box observable signal for one worker."""
+
+    agent_id: str
+    attempted_actions: int = 0
+    accepted_actions: int = 0
+    dropped_actions: int = 0
+    discounted_actions: int = 0
+    acceptance_rate: float = 1.0
+    discount_rate: float = 0.0
+    mean_discount: float = 0.0
+    suppression_streak: int = 0
+    suspected_filtering_score: float = 0.0
+    notes: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize one worker's black-box response signal."""
+
+        return asdict(self)
+
+
+@dataclass
+class DefenseReport:
+    """Defense monitor output with hidden ground truth and public signals."""
+
+    step: int
+    internal_detection_active: bool
+    hidden_lockdown_active: bool
+    internal_detection_by_agent: Dict[str, List[str]] = field(default_factory=dict)
+    public_signals_by_agent: Dict[str, AgentBlackBoxSignal] = field(default_factory=dict)
+    target_rank_before: int = 0
+    target_rank_after: int = 0
+    target_rank_delta: int = 0
+    notes: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize defense monitor report for logging and analysis."""
+
+        return {
+            "step": self.step,
+            "internal_detection_active": self.internal_detection_active,
+            "hidden_lockdown_active": self.hidden_lockdown_active,
+            "internal_detection_by_agent": {
+                aid: list(reasons) for aid, reasons in self.internal_detection_by_agent.items()
+            },
+            "public_signals_by_agent": {
+                aid: signal.to_dict() for aid, signal in self.public_signals_by_agent.items()
+            },
+            "target_rank_before": self.target_rank_before,
+            "target_rank_after": self.target_rank_after,
+            "target_rank_delta": self.target_rank_delta,
+            "notes": self.notes,
         }
 
 
@@ -139,6 +205,7 @@ class EnvironmentFeedback:
     alerts_by_agent: Dict[str, str]
     target_rank: int
     total_candidates: int
+    defense_report: Optional[DefenseReport] = None
     notes: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
@@ -150,5 +217,6 @@ class EnvironmentFeedback:
             "alerts_by_agent": dict(self.alerts_by_agent),
             "target_rank": self.target_rank,
             "total_candidates": self.total_candidates,
+            "defense_report": self.defense_report.to_dict() if self.defense_report is not None else None,
             "notes": self.notes,
         }

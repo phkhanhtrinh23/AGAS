@@ -1,0 +1,6 @@
+Generate up to {{max_actions}} profiler actions for agent {{agent_id}} at step {{step}}.
+Use only allowed candidate items from the context. Favor benign, high-popularity items and
+moderate-to-positive ratings that help estimate whether the recommender is integrating activity.
+
+Context:
+{{context_json}}

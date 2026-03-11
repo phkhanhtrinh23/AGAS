@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 import pandas as pd
 
+from agas.agents.defender import DefenseMonitorAgent
 from agas.agents.messages import (
     ActionOutcome,
     CoordinatorObservation,
@@ -23,6 +24,7 @@ from agas.recsys.surrogate import LightweightSurrogateRecommender
 class DefenseConfig:
     """Heuristic defense controls for the surrogate environment."""
 
+    black_box_mode: bool = True
     spike_threshold: int = 2
     extreme_deviation: float = 1.5
     trust_for_full_weight: float = 1.2
@@ -47,6 +49,7 @@ class AGASEnvironment:
         target_keyword: str = "horror",
         defense_config: Optional[DefenseConfig] = None,
         seed: int = 42,
+        defense_agent: Optional[DefenseMonitorAgent] = None,
         # Backward-compatible aliases
         model: Optional[LightweightSurrogateRecommender] = None,
         target_item: Optional[str] = None,
@@ -62,6 +65,7 @@ class AGASEnvironment:
             target_keyword: Keyword used to identify target-domain/cluster items.
             defense_config: Optional defense heuristic configuration.
             seed: Random seed for stochastic defense behavior.
+            defense_agent: Optional defense monitor agent producing hidden/public reports.
             model: Backward-compatible alias for ``recommender``.
             target_item: Backward-compatible alias for ``target_item_id``.
             target_genre: Backward-compatible alias for ``target_keyword``.
@@ -102,9 +106,14 @@ class AGASEnvironment:
         self.target_keyword = target_keyword.lower().strip()
         self.config = defense_config or DefenseConfig()
         self.rng = np.random.default_rng(seed)
+        self.defense_agent = defense_agent or DefenseMonitorAgent()
 
         self.lockdown_active = False
         self.last_alerts: Dict[str, str] = {}
+        self.last_rank_delta: int = 0
+        self.last_public_signals: Dict[str, dict] = {}
+        self.last_public_notes: Optional[str] = None
+        self.last_defense_report = None
 
         self.target_cluster_item_ids = self._resolve_target_cluster_items()
         self.benchmark_items = self._resolve_benchmark_items()
@@ -243,15 +252,20 @@ class AGASEnvironment:
 
         trust = {aid: float(st.trust) for aid, st in worker_states.items()}
         risk = {aid: float(st.risk) for aid, st in worker_states.items()}
+        exposed_alerts = {} if self.config.black_box_mode else dict(self.last_alerts)
+        exposed_lockdown = False if self.config.black_box_mode else self.lockdown_active
         return CoordinatorObservation(
             step=step,
             target_item_id=self.target_item_id,
             target_rank=self.current_rank,
             total_candidates=self.total_candidates,
-            alerts_by_agent=dict(self.last_alerts),
+            target_rank_delta=self.last_rank_delta,
+            alerts_by_agent=exposed_alerts,
             trust_by_agent=trust,
             risk_by_agent=risk,
-            lockdown_active=self.lockdown_active,
+            signals_by_agent=dict(self.last_public_signals),
+            lockdown_active=exposed_lockdown,
+            notes=self.last_public_notes,
         )
 
     def execute_step(
@@ -275,6 +289,7 @@ class AGASEnvironment:
         all_actions: List[RatingAction] = [a for r in reports for a in r.actions]
         outcomes: List[ActionOutcome] = []
         new_rows = []
+        previous_rank = self.current_rank
 
         acted_agents = {a.agent_id for a in all_actions}
         step_alerts: Dict[str, str] = {}
@@ -282,11 +297,18 @@ class AGASEnvironment:
         for action in all_actions:
             state = worker_states[action.agent_id]
             accepted, eff_rating, trust_delta, risk_delta, reason = self._apply_action_with_defense(action, state)
+            discount_value = 0.0
+            discount_applied = False
+            if accepted and eff_rating is not None:
+                discount_value = float(action.rating) - float(eff_rating)
+                discount_applied = abs(discount_value) > 1e-9
             outcomes.append(
                 ActionOutcome(
                     action=action,
                     accepted=accepted,
                     effective_rating=eff_rating,
+                    discount_applied=discount_applied,
+                    discount_value=float(discount_value),
                     trust_delta=trust_delta,
                     risk_delta=risk_delta,
                     reason=reason,
@@ -316,6 +338,23 @@ class AGASEnvironment:
 
         self.current_rank, self.total_candidates = self._target_rank()
         self.last_alerts = step_alerts
+        defense_report = self.defense_agent.analyze(
+            step=step,
+            reports=reports,
+            outcomes=outcomes,
+            worker_states=worker_states,
+            target_item_id=self.target_item_id,
+            previous_rank=previous_rank,
+            current_rank=self.current_rank,
+            internal_alerts_by_agent=step_alerts,
+            hidden_lockdown_active=self.lockdown_active,
+        )
+        self.last_rank_delta = defense_report.target_rank_delta
+        self.last_public_signals = {
+            aid: signal.to_dict() for aid, signal in defense_report.public_signals_by_agent.items()
+        }
+        self.last_public_notes = defense_report.notes
+        self.last_defense_report = defense_report
 
         notes = "Lockdown active" if self.lockdown_active else "Normal filtering"
         return EnvironmentFeedback(
@@ -324,6 +363,7 @@ class AGASEnvironment:
             alerts_by_agent=step_alerts,
             target_rank=self.current_rank,
             total_candidates=self.total_candidates,
+            defense_report=defense_report,
             notes=notes,
         )
 

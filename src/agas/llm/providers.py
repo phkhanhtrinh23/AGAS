@@ -57,10 +57,12 @@ class OpenAIClient:
         Returns:
             Generated text extracted from OpenAI response content.
         """
-
+        
+        print(f"System prompt:\n{request.system_prompt}\n")
+        print(f"User prompt:\n{request.user_prompt}\n")
+        
         response = self._client.responses.create(
             model=self.model,
-            temperature=request.temperature,
             max_output_tokens=request.max_tokens,
             input=[
                 {"role": "system", "content": request.system_prompt},

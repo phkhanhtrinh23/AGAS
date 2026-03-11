@@ -20,7 +20,8 @@ def test_preprocess_smoke(tmp_path: Path) -> None:
     datasets = {s.dataset for s in stats}
     assert "ml-latest-small" in datasets
     assert "amazon_review" in datasets
-    assert "music_in_car" in datasets
+    if Path("data/music_in_car/Data_InCarMusic.xlsx").exists():
+        assert "music_in_car" in datasets
 
     for s in stats:
         assert s.output_interactions.exists()

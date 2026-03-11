@@ -38,6 +38,8 @@ class EpisodeResult:
     final_rank: int
     final_total_candidates: int
     final_worker_states: Dict[str, dict]
+    agent_logs: Dict[str, List[dict]]
+    coordinator_logs: List[dict]
 
     @property
     def final_target_rank(self) -> int:
@@ -80,11 +82,25 @@ class AGASEpisodeRunner:
         """Execute the full multi-step AGAS loop and return structured results."""
 
         history: List[dict] = []
+        agent_logs: Dict[str, List[dict]] = {aid: [] for aid in self.workers}
+        coordinator_logs: List[dict] = []
 
         for step in range(self.config.num_steps):
             worker_states: Dict[str, WorkerState] = {aid: worker.state for aid, worker in self.workers.items()}
+            state_before = {
+                aid: {
+                    "trust": float(worker.state.trust),
+                    "risk": float(worker.state.risk),
+                    "actions_taken": int(worker.state.actions_taken),
+                    "current_role": worker.state.current_role.value,
+                    "role_history": list(worker.state.role_history),
+                }
+                for aid, worker in self.workers.items()
+            }
             observation = self.environment.observation(step=step, worker_states=worker_states)
             assignments = self.coordinator.assign_roles(observation=observation, worker_states=worker_states)
+            policy = getattr(self.coordinator, "policy", None)
+            coordinator_trace = getattr(policy, "last_trace", None)
 
             ctx = self.environment.build_worker_context()
             reports = []
@@ -97,6 +113,39 @@ class AGASEpisodeRunner:
                 reports=reports,
                 worker_states=worker_states,
             )
+            state_after = {
+                aid: {
+                    "trust": float(worker.state.trust),
+                    "risk": float(worker.state.risk),
+                    "actions_taken": int(worker.state.actions_taken),
+                    "current_role": worker.state.current_role.value,
+                    "role_history": list(worker.state.role_history),
+                }
+                for aid, worker in self.workers.items()
+            }
+            outcome_map: Dict[str, List[dict]] = {aid: [] for aid in self.workers}
+            for outcome in feedback.outcomes:
+                outcome_map.setdefault(outcome.action.agent_id, []).append(outcome.to_dict())
+
+            for report in reports:
+                agent_logs.setdefault(report.agent_id, []).append(
+                    {
+                        "step": step,
+                        "assignment": assignments[report.agent_id].to_dict(),
+                        "report": report.to_dict(),
+                        "outcomes": outcome_map.get(report.agent_id, []),
+                        "state_before": state_before[report.agent_id],
+                        "state_after": state_after[report.agent_id],
+                    }
+                )
+            coordinator_logs.append(
+                {
+                    "step": step,
+                    "observation": observation.to_dict(),
+                    "assignments": {aid: assn.to_dict() for aid, assn in assignments.items()},
+                    "trace": coordinator_trace,
+                }
+            )
 
             history.append(
                 {
@@ -105,6 +154,9 @@ class AGASEpisodeRunner:
                     "assignments": {aid: assn.to_dict() for aid, assn in assignments.items()},
                     "reports": [rep.to_dict() for rep in reports],
                     "feedback": feedback.to_dict(),
+                    "coordinator_trace": coordinator_trace,
+                    "state_before": state_before,
+                    "state_after": state_after,
                 }
             )
 
@@ -123,6 +175,8 @@ class AGASEpisodeRunner:
             final_rank=self.environment.current_rank,
             final_total_candidates=self.environment.total_candidates,
             final_worker_states=final_states,
+            agent_logs=agent_logs,
+            coordinator_logs=coordinator_logs,
         )
 
 

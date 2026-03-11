@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Dict, Protocol, Sequence
+from typing import Any, Dict, Protocol, Sequence
 
 from agas.agents.messages import AgentRole, CoordinatorObservation, RoleAssignment
 from agas.agents.worker import WorkerState
+from agas.llm.prompt_store import PromptStore
 from agas.llm.providers import LLMClient, LLMRequest
 
 
@@ -38,6 +39,23 @@ class RuleBasedCoordinatorPolicy:
     """Rule-based policy that reproduces the described AGAS episode logic."""
 
     agent_order: Sequence[str] | None = None
+
+    @staticmethod
+    def _black_box_suspicion(observation: CoordinatorObservation, agent_id: str) -> float:
+        """Return inferred detection pressure for one worker from public signals.
+
+        Args:
+            observation: Black-box coordinator observation for the current step.
+            agent_id: Worker ID whose signal should be inspected.
+
+        Returns:
+            Suspicion score in ``[0, 1]``.
+        """
+
+        signal = observation.signals_by_agent.get(agent_id, {})
+        if not isinstance(signal, dict):
+            return 0.0
+        return float(signal.get("suspected_filtering_score", 0.0))
 
     def assign(
         self,
@@ -98,7 +116,11 @@ class RuleBasedCoordinatorPolicy:
                 assignments[self.agent_order[0]].rationale = "Generate benign background activity as timing noise."
             return assignments
 
-        alerted = [a for a in self.agent_order if a in observation.alerts_by_agent]
+        alerted = [
+            aid
+            for aid in self.agent_order
+            if aid in observation.alerts_by_agent or self._black_box_suspicion(observation, aid) >= 0.55
+        ]
 
         if alerted:
             first = alerted[0]
@@ -136,6 +158,13 @@ class LLMCoordinatorPolicy:
 
     client: LLMClient
     agent_order: Sequence[str]
+    prompt_store: PromptStore | None = None
+
+    def __post_init__(self) -> None:
+        """Initialize coordinator prompt store and trace cache."""
+
+        self.prompt_store = self.prompt_store or PromptStore()
+        self.last_trace: Dict[str, Any] | None = None
 
     def assign(
         self,
@@ -154,16 +183,35 @@ class LLMCoordinatorPolicy:
         """
 
         prompt = self._build_prompt(observation, worker_states)
+        bundle = self.prompt_store.load(
+            key="coordinator",
+            default_system=(
+                "You are a coordinator for an AGAS simulation. Use only black-box response signals, worker "
+                "trust/risk, and target-rank movement to assign roles. Output strictly valid JSON with keys as "
+                "agent ids and values in {profiler, camouflaguer, sniper, inactive}."
+            ),
+            default_user=(
+                "Assign one role to each agent using the black-box observation below.\n"
+                "Prefer stealth when filtering suspicion is high.\n"
+                "Context:\n{{context_json}}"
+            ),
+        )
+        user_prompt = bundle.render_user({"context_json": prompt})
         response = self.client.generate(
             LLMRequest(
-                system_prompt=(
-                    "You are a coordinator for an AGAS simulation. Output strictly valid JSON with keys"
-                    " as agent ids and values in {profiler, camouflaguer, sniper, inactive}."
-                ),
-                user_prompt=prompt,
+                system_prompt=bundle.system_prompt,
+                user_prompt=user_prompt,
                 temperature=0.1,
             )
         )
+        self.last_trace = {
+            "prompt_key": bundle.key,
+            "system_prompt": bundle.system_prompt,
+            "user_prompt": user_prompt,
+            "raw_response": response,
+            "system_path": bundle.system_path,
+            "user_path": bundle.user_path,
+        }
 
         assignments = self._parse_assignments(response, observation.step)
         if assignments:

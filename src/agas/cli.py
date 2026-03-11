@@ -12,6 +12,7 @@ from typing import Optional
 import pandas as pd
 
 from agas.agents.coordinator import Coordinator, LLMCoordinatorPolicy, RuleBasedCoordinatorPolicy
+from agas.llm.prompt_store import PromptStore
 from agas.agents.worker import build_worker_pool
 from agas.data.pipeline import PreprocessConfig, preprocess_all
 from agas.llm.providers import build_llm_client
@@ -188,7 +189,7 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
     )
 
     agent_ids = default_agent_ids(args.num_agents)
-    workers = build_worker_pool(agent_ids)
+    prompt_store = PromptStore(Path(args.prompt_root))
 
     if args.coordinator_policy == "rule":
         policy = RuleBasedCoordinatorPolicy(agent_order=agent_ids)
@@ -200,9 +201,26 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
             client = build_llm_client(provider="openai", model=args.llm_model, api_key=api_key)
         else:
             client = build_llm_client(provider="ollama", model=args.llm_model, host=args.ollama_host)
-        policy = LLMCoordinatorPolicy(client=client, agent_order=agent_ids)
+        policy = LLMCoordinatorPolicy(client=client, agent_order=agent_ids, prompt_store=prompt_store)
 
     coordinator = Coordinator(policy=policy)
+    worker_policy_name = args.worker_policy
+    worker_llm_client = None
+    if args.worker_policy != "rule":
+        worker_model = args.worker_llm_model or args.llm_model
+        if args.worker_policy == "openai":
+            api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
+            if not api_key:
+                raise RuntimeError("OPENAI_API_KEY is required for OpenAI worker policy")
+            worker_llm_client = build_llm_client(provider="openai", model=worker_model, api_key=api_key)
+        else:
+            worker_llm_client = build_llm_client(provider="ollama", model=worker_model, host=args.ollama_host)
+    workers = build_worker_pool(
+        agent_ids,
+        llm_client=worker_llm_client,
+        prompt_store=prompt_store,
+        policy_name=worker_policy_name,
+    )
 
     env = AGASEnvironment(
         recommender=model,
@@ -211,6 +229,7 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
         target_item_id=str(args.target_item_id),
         target_keyword=args.target_keyword,
         defense_config=DefenseConfig(
+            black_box_mode=not args.expose_defense_state,
             spike_threshold=args.spike_threshold,
             lockdown_drop_prob=args.lockdown_drop_prob,
         ),
@@ -236,9 +255,13 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
                 "num_steps": args.num_steps,
                 "num_agents": args.num_agents,
                 "coordinator_policy": args.coordinator_policy,
+                "worker_policy": args.worker_policy,
+                "prompt_root": str(Path(args.prompt_root)),
                 "final_rank": result.final_rank,
                 "final_total_candidates": result.final_total_candidates,
                 "final_worker_states": result.final_worker_states,
+                "agent_logs": result.agent_logs,
+                "coordinator_logs": result.coordinator_logs,
                 "history": result.history,
             },
             f,
@@ -246,6 +269,16 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
         )
 
     print(f"Episode finished. Target rank: {result.final_rank}/{result.final_total_candidates}")
+    for step_entry in result.history:
+        step = step_entry["step"]
+        feedback = step_entry["feedback"]
+        rank = feedback["target_rank"]
+        total = feedback["total_candidates"]
+        print(f"Step {step}: target rank {rank}/{total}")
+        for report in step_entry["reports"]:
+            actions = report.get("actions", [])
+            action_text = ", ".join(f"{a['item_id']}->{a['rating']}" for a in actions) if actions else "no action"
+            print(f"  {report['agent_id']} [{report['role']}] via {report.get('policy', 'rule')}: {action_text}")
     print(f"Saved detailed timeline to {out_path}")
     return 0
 
@@ -288,10 +321,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--num-steps", type=int, default=4)
     p_run.add_argument("--seed", type=int, default=42)
 
-    p_run.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama"], default="rule")
-    p_run.add_argument("--llm-model", default="gpt-4o-mini")
+    p_run.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama"], default="openai")
+    p_run.add_argument("--llm-model", default="gpt-5-mini")
     p_run.add_argument("--openai-api-key", default=None)
     p_run.add_argument("--ollama-host", default="http://localhost:11434")
+    p_run.add_argument("--worker-policy", choices=["rule", "openai", "ollama"], default="rule")
+    p_run.add_argument("--worker-llm-model", default=None)
+    p_run.add_argument("--prompt-root", default="prompts")
+    p_run.add_argument("--expose-defense-state", action="store_true")
 
     p_run.add_argument("--spike-threshold", type=int, default=2)
     p_run.add_argument("--lockdown-drop-prob", type=float, default=0.55)

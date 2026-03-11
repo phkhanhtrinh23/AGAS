@@ -39,3 +39,4 @@ def test_episode_runner_smoke(tmp_path: Path) -> None:
     result = runner.run()
     assert len(result.history) == 3
     assert isinstance(result.final_target_rank, int)
+    assert result.history[0]["feedback"]["defense_report"] is not None
