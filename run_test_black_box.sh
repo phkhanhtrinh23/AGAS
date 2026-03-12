@@ -8,7 +8,7 @@ PYTHONPATH=src python -m agas.cli run-episode \
   --dataset ml-latest-small \
   --max-interactions 5000 \
   --n-factors 24 \
-  --target-item-id 250 \
+  --target-item-id 123 \
   --goal-rank 3 \
   --num-steps 20 \
   --num-agents 4 \
