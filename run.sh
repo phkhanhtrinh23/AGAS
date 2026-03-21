@@ -39,3 +39,16 @@ done
 
 echo
 echo "Saved episode traces to ${OUTPUT_ROOT}"
+
+# python -m agas.cli run-transfer \
+#   --processed-root processed \
+#   --dataset ml-latest-small \
+#   --max-interactions 50000 \
+#   --num-steps 4 \
+#   --num-agents 4 \
+#   --coordinator-policy rule \
+#   --worker-policy rule \
+#   --transfer-mode both \
+#   --target-epochs 1 \
+#   --target-batch-size 2048 \
+#   --output outputs/transfer_result.json

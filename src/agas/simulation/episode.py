@@ -19,6 +19,7 @@ class EpisodeConfig:
     num_workers: int = 4
     goal_rank: int | None = 5
     stop_on_goal: bool = True
+    trajectory_window: int = 5
     n_steps: int | None = None
     n_workers: int | None = None
 
@@ -140,6 +141,35 @@ class AGASEpisodeRunner:
             for aid, worker in self.workers.items()
         }
 
+    def _trajectory_summary(self, history: List[dict]) -> List[Dict[str, dict]]:
+        """Build a compact rolling summary of recent steps for LLM memory.
+
+        Args:
+            history: Full episode history collected so far.
+
+        Returns:
+            List of per-step summaries for the last ``trajectory_window`` steps.
+        """
+
+        window = max(1, int(self.config.trajectory_window))
+        recent = history[-window:]
+        summary: List[Dict[str, dict]] = []
+        for entry in recent:
+            step = entry.get("step")
+            feedback = entry.get("feedback", {})
+            defense = feedback.get("defense_report") or {}
+            summary.append(
+                {
+                    "step": int(step),
+                    "target_rank": int(entry["observation"]["target_rank"]),
+                    "target_rank_delta": int(entry["observation"].get("target_rank_delta", 0)),
+                    "total_candidates": int(entry["observation"]["total_candidates"]),
+                    "alerts": dict(feedback.get("alerts_by_agent", {})),
+                    "public_signals": defense.get("public_signals_by_agent", {}),
+                }
+            )
+        return summary
+
     def run(self) -> EpisodeResult:
         """Execute the full multi-step AGAS loop and return structured results.
 
@@ -173,7 +203,13 @@ class AGASEpisodeRunner:
         for step in range(self.config.num_steps):
             worker_states: Dict[str, WorkerState] = {aid: worker.state for aid, worker in self.workers.items()}
             state_before = self._state_snapshot()
-            observation = self.environment.observation(step=step, worker_states=worker_states)
+            trajectory_summary = self._trajectory_summary(history)
+            observation = self.environment.observation(
+                step=step,
+                worker_states=worker_states,
+                trajectory_summary=trajectory_summary,
+                total_steps=self.config.num_steps,
+            )
             assignments = self.coordinator.assign_roles(observation=observation, worker_states=worker_states)
             policy = getattr(self.coordinator, "policy", None)
             coordinator_trace = getattr(policy, "last_trace", None)
@@ -181,6 +217,8 @@ class AGASEpisodeRunner:
             ctx = self.environment.build_worker_context()
             reports = []
             for agent_id in self.workers:
+                if hasattr(self.workers[agent_id], "set_trajectory_summary"):
+                    self.workers[agent_id].set_trajectory_summary(trajectory_summary, self.config.num_steps)
                 report = self.workers[agent_id].act(assignments[agent_id], step=step, ctx=ctx)
                 reports.append(report)
 

@@ -269,7 +269,13 @@ class AGASEnvironment:
             noise_items=self.noise_items,
         )
 
-    def observation(self, step: int, worker_states: Dict[str, WorkerState]) -> CoordinatorObservation:
+    def observation(
+        self,
+        step: int,
+        worker_states: Dict[str, WorkerState],
+        trajectory_summary: Optional[List[Dict[str, Any]]] = None,
+        total_steps: int | None = None,
+    ) -> CoordinatorObservation:
         """Build observation message for coordinator.
 
         Args:
@@ -290,6 +296,8 @@ class AGASEnvironment:
             target_rank=self.current_rank,
             total_candidates=self.total_candidates,
             target_rank_delta=self.last_rank_delta,
+            total_steps=total_steps,
+            trajectory_summary=trajectory_summary,
             alerts_by_agent=exposed_alerts,
             trust_by_agent=trust,
             risk_by_agent=risk,

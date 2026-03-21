@@ -91,6 +91,12 @@ python -m pip install --upgrade pip
 python -m pip install -e .
 ```
 
+Optional target-model dependencies (NeuMF/LightGCN):
+
+```bash
+python -m pip install -e ".[targets]"
+```
+
 ## 4. Preprocess Data
 
 Run all available adapters:
@@ -198,6 +204,39 @@ Instead it receives black-box signals derived from:
 Hidden defense activity is still logged separately through `DefenseReport` for analysis.
 
 ### Defense monitor agent
+
+## 7. Transfer Evaluation (Option A + Option B)
+
+The CLI includes a `run-transfer` command to evaluate transfer to real target models:
+
+- **Option A (offline target models)**: run AGAS on the surrogate, extract accepted interactions, then
+  retrain target models on clean vs. clean+attack and measure rank shift.
+- **Option B (in-loop target models)**: replace the surrogate with NeuMF/LightGCN inside the loop and
+  retrain per step.
+
+Example (both options):
+
+```bash
+agas run-transfer \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --target-item-id 101 \
+  --target-keyword horror \
+  --num-steps 6 \
+  --transfer-mode both \
+  --target-models neumf,lightgcn \
+  --output outputs/transfer_result.json
+```
+
+Tune target model training as needed:
+
+```bash
+agas run-transfer \
+  --target-epochs 3 \
+  --target-embedding-dim 64 \
+  --target-batch-size 1024 \
+  --target-device cpu
+```
 
 `src/agas/agents/defender.py` implements `DefenseMonitorAgent`, which:
 

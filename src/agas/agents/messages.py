@@ -64,6 +64,8 @@ class CoordinatorObservation:
     target_rank: int
     total_candidates: int
     target_rank_delta: int = 0
+    total_steps: int | None = None
+    trajectory_summary: Optional[List[Dict[str, Any]]] = None
     alerts_by_agent: Dict[str, str] = field(default_factory=dict)
     trust_by_agent: Dict[str, float] = field(default_factory=dict)
     risk_by_agent: Dict[str, float] = field(default_factory=dict)

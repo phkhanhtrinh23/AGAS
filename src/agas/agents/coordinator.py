@@ -169,12 +169,30 @@ class LLMCoordinatorPolicy:
     client: LLMClient
     agent_order: Sequence[str]
     prompt_store: PromptStore | None = None
+    temperature: float = 0.2
+    temperature_end: float | None = None
+    total_steps: int | None = None
 
     def __post_init__(self) -> None:
         """Initialize coordinator prompt store and trace cache."""
 
         self.prompt_store = self.prompt_store or PromptStore()
         self.last_trace: Dict[str, Any] | None = None
+
+    def _resolve_temperature(self, step: int) -> float:
+        """Return scheduled temperature for this step.
+
+        Args:
+            step: Current episode step index.
+
+        Returns:
+            Temperature to use for the LLM request.
+        """
+
+        if self.temperature_end is None or self.total_steps in (None, 0, 1):
+            return float(self.temperature)
+        ratio = max(0.0, min(1.0, step / max(1, self.total_steps - 1)))
+        return float(self.temperature + (self.temperature_end - self.temperature) * ratio)
 
     def assign(
         self,
@@ -223,7 +241,7 @@ class LLMCoordinatorPolicy:
                 LLMRequest(
                     system_prompt=bundle.system_prompt,
                     user_prompt=user_prompt,
-                    temperature=0.1,
+                    temperature=self._resolve_temperature(observation.step),
                 )
             )
         except Exception as exc:

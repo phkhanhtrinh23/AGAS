@@ -55,6 +55,9 @@ class WorkerAgent:
         llm_client: LLMClient | None = None,
         prompt_store: PromptStore | None = None,
         policy_name: str = "rule",
+        temperature: float = 0.2,
+        temperature_end: float | None = None,
+        total_steps: int | None = None,
     ):
         """Initialize one worker with mutable state and deterministic RNG.
 
@@ -75,6 +78,37 @@ class WorkerAgent:
         self._prompt_store = prompt_store or PromptStore()
         self._policy_name = policy_name
         self.last_trace: Optional[Dict[str, Any]] = None
+        self._temperature_start = float(temperature)
+        self._temperature_end = float(temperature_end) if temperature_end is not None else None
+        self._total_steps = total_steps
+        self._trajectory_summary: List[Dict[str, Any]] = []
+
+    def set_trajectory_summary(self, summary: List[Dict[str, Any]], total_steps: int | None = None) -> None:
+        """Attach a rolling episode summary for LLM context.
+
+        Args:
+            summary: Rolling list of recent step summaries.
+            total_steps: Optional total episode length for temperature scheduling.
+        """
+
+        self._trajectory_summary = list(summary)
+        if total_steps is not None:
+            self._total_steps = total_steps
+
+    def _resolve_temperature(self, step: int) -> float:
+        """Return scheduled temperature for this step.
+
+        Args:
+            step: Current episode step index.
+
+        Returns:
+            Temperature to use for the LLM request.
+        """
+
+        if self._temperature_end is None or self._total_steps in (None, 0, 1):
+            return float(self._temperature_start)
+        ratio = max(0.0, min(1.0, step / max(1, self._total_steps - 1)))
+        return float(self._temperature_start + (self._temperature_end - self._temperature_start) * ratio)
 
     def act(self, assignment: RoleAssignment, step: int, ctx: WorkerContext) -> WorkerActionReport:
         """Generate role-specific actions for this step and update local counters.
@@ -389,6 +423,7 @@ class WorkerAgent:
             "target_cluster_items": list(ctx.target_cluster_items[:20]),
             "competitor_items": list(ctx.competitor_items[:10]),
             "noise_items": list(ctx.noise_items[:20]),
+            "trajectory_summary": list(self._trajectory_summary),
         }
 
         default_system, default_user = self._default_prompt_text(role)
@@ -407,7 +442,11 @@ class WorkerAgent:
                 "context_json": context_json,
             }
         )
-        request = LLMRequest(system_prompt=bundle.system_prompt, user_prompt=user_prompt, temperature=0.2)
+        request = LLMRequest(
+            system_prompt=bundle.system_prompt,
+            user_prompt=user_prompt,
+            temperature=self._resolve_temperature(step),
+        )
         raw_response = ""
         llm_error: str | None = None
         try:
@@ -451,6 +490,9 @@ def build_worker_pool(
     llm_client: LLMClient | None = None,
     prompt_store: PromptStore | None = None,
     policy_name: str = "rule",
+    temperature: float = 0.2,
+    temperature_end: float | None = None,
+    total_steps: int | None = None,
 ) -> Dict[str, WorkerAgent]:
     """Create worker agents with default policy configuration.
 
@@ -474,5 +516,8 @@ def build_worker_pool(
             llm_client=llm_client,
             prompt_store=prompt_store,
             policy_name=policy_name,
+            temperature=temperature,
+            temperature_end=temperature_end,
+            total_steps=total_steps,
         )
     return pool
