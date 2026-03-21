@@ -180,6 +180,8 @@ class AgentBlackBoxSignal:
     mean_discount: float = 0.0
     suppression_streak: int = 0
     suspected_filtering_score: float = 0.0
+    group_overlap: float = 0.0
+    group_suspicion: float = 0.0
     notes: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:

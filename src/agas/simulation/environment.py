@@ -8,7 +8,7 @@ from typing import Dict, Iterable, List, Optional
 import numpy as np
 import pandas as pd
 
-from agas.agents.defender import DefenseMonitorAgent
+from agas.agents.defender import DefenseMonitorAgent, DefenseMonitorConfig
 from agas.agents.messages import (
     ActionOutcome,
     CoordinatorObservation,
@@ -35,6 +35,7 @@ class DefenseConfig:
     trust_gain_action: float = 0.1
     risk_gain_extreme_scale: float = 0.35
     risk_gain_alert: float = 0.8
+    monitor_config: Optional[DefenseMonitorConfig] = None
 
 
 class AGASEnvironment:
@@ -105,7 +106,7 @@ class AGASEnvironment:
         self.target_keyword = target_keyword.lower().strip()
         self.config = defense_config or DefenseConfig()
         self.rng = np.random.default_rng(seed)
-        self.defense_agent = defense_agent or DefenseMonitorAgent()
+        self.defense_agent = defense_agent or DefenseMonitorAgent(config=self.config.monitor_config)
 
         self.lockdown_active = False
         self.last_alerts: Dict[str, str] = {}

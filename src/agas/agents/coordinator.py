@@ -41,6 +41,11 @@ class CoordinatorRuntimeConfig:
     profiler_interval: int = 3
     profiler_probe_suspicion: float = 0.35
     profiler_probe_on_stall: bool = True
+    profiler_probe_suppression_streak: int = 1
+    sniper_lock_steps: int = 2
+    sniper_lock_suspicion: float = 0.6
+    sniper_lock_suppression_streak: int = 2
+    sniper_lock_role: AgentRole = AgentRole.INACTIVE
 
 
 @dataclass
@@ -348,6 +353,9 @@ class Coordinator:
 
         self.policy = policy
         self.runtime_config = runtime_config or CoordinatorRuntimeConfig()
+        self._sniper_lockouts: Dict[str, int] = {}
+        self._last_assignments: Dict[str, RoleAssignment] | None = None
+        self.last_runtime_trace: Dict[str, Any] | None = None
 
     @staticmethod
     def _agent_signal(observation: CoordinatorObservation, agent_id: str) -> Dict[str, Any]:
@@ -363,6 +371,73 @@ class Coordinator:
 
         signal = observation.signals_by_agent.get(agent_id, {})
         return signal if isinstance(signal, dict) else {}
+
+    def _suppression_metrics(self, observation: CoordinatorObservation, agent_id: str) -> tuple[float, int]:
+        """Extract suppression-related metrics for one worker.
+
+        Args:
+            observation: Current environment observation.
+            agent_id: Worker ID to inspect.
+
+        Returns:
+            Tuple ``(suspected_filtering_score, suppression_streak)``.
+        """
+
+        signal = self._agent_signal(observation, agent_id)
+        suspicion = float(signal.get("suspected_filtering_score", 0.0))
+        streak = int(signal.get("suppression_streak", 0))
+        return suspicion, streak
+
+    def _decay_lockouts(self) -> None:
+        """Age out existing lockouts by one step."""
+
+        updated: Dict[str, int] = {}
+        for aid, remaining in self._sniper_lockouts.items():
+            next_remaining = int(remaining) - 1
+            if next_remaining > 0:
+                updated[aid] = next_remaining
+        self._sniper_lockouts = updated
+
+    def _update_sniper_lockouts(self, observation: CoordinatorObservation) -> None:
+        """Lock out recently detected snipers for a fixed number of steps."""
+
+        self._decay_lockouts()
+        if not self._last_assignments:
+            return
+
+        for aid, assignment in self._last_assignments.items():
+            if assignment.role != AgentRole.SNIPER:
+                continue
+            suspicion, streak = self._suppression_metrics(observation, aid)
+            alerted = aid in observation.alerts_by_agent
+            if alerted or suspicion >= self.runtime_config.sniper_lock_suspicion or streak >= self.runtime_config.sniper_lock_suppression_streak:
+                self._sniper_lockouts[aid] = max(self._sniper_lockouts.get(aid, 0), self.runtime_config.sniper_lock_steps)
+
+    def _apply_lockouts(
+        self,
+        observation: CoordinatorObservation,
+        assignments: Dict[str, RoleAssignment],
+    ) -> Dict[str, RoleAssignment]:
+        """Force locked agents away from sniper roles."""
+
+        if not self._sniper_lockouts:
+            return assignments
+
+        adjusted: Dict[str, RoleAssignment] = {}
+        for aid, assignment in assignments.items():
+            lock_remaining = self._sniper_lockouts.get(aid, 0)
+            if lock_remaining > 0:
+                adjusted[aid] = RoleAssignment(
+                    step=assignment.step,
+                    agent_id=aid,
+                    role=self.runtime_config.sniper_lock_role,
+                    rationale=(
+                        f"Locked after suppression signals; hold for {lock_remaining} more steps."
+                    ),
+                )
+            else:
+                adjusted[aid] = assignment
+        return adjusted
 
     def _needs_profiler_probe(
         self,
@@ -393,13 +468,15 @@ class Coordinator:
             return True
 
         for agent_id in assignments:
-            signal = self._agent_signal(observation, agent_id)
-            if float(signal.get("suspected_filtering_score", 0.0)) >= self.runtime_config.profiler_probe_suspicion:
+            suspicion, streak = self._suppression_metrics(observation, agent_id)
+            if suspicion >= self.runtime_config.profiler_probe_suspicion:
+                return True
+            if self.runtime_config.profiler_probe_suppression_streak > 0 and streak >= self.runtime_config.profiler_probe_suppression_streak:
                 return True
         return False
 
-    @staticmethod
     def _pick_profiler_candidate(
+        self,
         assignments: Dict[str, RoleAssignment],
         worker_states: Dict[str, WorkerState],
     ) -> str | None:
@@ -420,7 +497,11 @@ class Coordinator:
             AgentRole.SNIPER,
         ]
         for role in by_role:
-            candidates = [aid for aid, assignment in assignments.items() if assignment.role == role]
+            candidates = [
+                aid
+                for aid, assignment in assignments.items()
+                if assignment.role == role and self._sniper_lockouts.get(aid, 0) <= 0
+            ]
             if not candidates:
                 continue
             candidates.sort(key=lambda aid: (worker_states[aid].risk, -worker_states[aid].trust), reverse=True)
@@ -485,4 +566,12 @@ class Coordinator:
         """
 
         assignments = self.policy.assign(observation, worker_states)
-        return self._ensure_profiler_presence(observation, worker_states, assignments)
+        self._update_sniper_lockouts(observation)
+        assignments = self._apply_lockouts(observation, assignments)
+        assignments = self._ensure_profiler_presence(observation, worker_states, assignments)
+        self._last_assignments = assignments
+        self.last_runtime_trace = {
+            "sniper_lockouts": dict(self._sniper_lockouts),
+            "profiler_forced": any(a.role == AgentRole.PROFILER for a in assignments.values()),
+        }
+        return assignments

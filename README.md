@@ -205,6 +205,104 @@ Hidden defense activity is still logged separately through `DefenseReport` for a
 
 ### Defense monitor agent
 
+### Suppression Handling (Sniper Lockouts + Profiler Probes)
+
+Coordinator runtime guardrails now include:
+
+- **Sniper lockouts**: when a sniper shows suppression signals, it is locked
+  for `N` steps and forced into `inactive` (or `camouflaguer`).
+- **Profiler probes after suppression**: when suppression streaks rise, the
+  coordinator forces a profiler probe to check whether ratings are still
+  being integrated.
+
+CLI knobs (defaults shown):
+
+- `--sniper-lock-steps 2`
+- `--sniper-lock-suspicion 0.6`
+- `--sniper-lock-suppression-streak 2`
+- `--sniper-lock-role inactive`
+- `--profiler-probe-suppression-streak 1`
+
+Example run that triggers suppression and lockouts:
+
+```bash
+agas run-episode \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --target-item-id 101 \
+  --num-steps 8 \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --spike-threshold 1 \
+  --lockdown-drop-prob 0.7 \
+  --sniper-lock-steps 2 \
+  --sniper-lock-suppression-streak 1 \
+  --output outputs/episode_lockout_example.json
+```
+
+The per-step JSON contains `coordinator_runtime_trace` with active lockouts.
+Example from `outputs/episode_lockout_example.json`:
+
+- step 3: `sniper_lockouts` shows `agent_2` and `agent_3` locked for 2 steps
+- step 4: lockouts decay and `agent_4` enters lockout after suppression
+
+### Group Attack Detection (Collusion Signals)
+
+The defense monitor now computes **group-collusion signals** based on per-step
+item overlap between agents. These signals appear in each agent’s
+`signals_by_agent` as:
+
+- `group_overlap`: max Jaccard overlap with any other agent’s items
+- `group_suspicion`: overlap above threshold (optionally requires target item)
+
+CLI knobs:
+
+- `--group-overlap-threshold` (default `0.6`)
+- `--group-target-required` (default `true`)
+- `--group-weight` (default `0.2`)
+
+These signals contribute to the public `suspected_filtering_score` and can
+trigger lockouts or profiler probes.
+
+Example run (group overlap threshold lowered to surface collusion):
+
+```bash
+agas run-episode \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --target-item-id 101 \
+  --num-steps 6 \
+  --group-overlap-threshold 0.2 \
+  --group-target-required \
+  --output outputs/episode_group_detection.json
+```
+
+The output includes per-agent `group_overlap` and `group_suspicion` in
+`history[*].feedback.defense_report.public_signals_by_agent`.
+
+### Surrogate vs Target Models (Option A vs B)
+
+- The **surrogate model** is the lightweight SVD-based recommender in
+  `src/agas/recsys/surrogate.py`. It is updated **every step** during an
+  episode (online refit).
+- The **target models** (NeuMF, LightGCN) are only used in transfer evaluation:
+  - **Option A (offline):** run the episode on the surrogate, then retrain
+    target models once on clean vs. clean+attack.
+  - **Option B (in-loop):** replace the surrogate with a target model and
+    retrain it each step for live feedback.
+
+## Related Papers (Short Positioning)
+
+- **AgentAttack: LLM Agents for Multi-Strategy Shilling Attacks (2026)**  
+  LLM-driven, black-box shilling with multi-round feedback and adaptive strategy
+  selection. It uses agent reasoning but does not model explicit multi-role
+  coordination (Profiler/Camouflaguer/Sniper) or group-level defense signals.
+
+- **AgentSA / LLM Agent-based Shilling Attack (WSDM’26)**  
+  Low-knowledge/black-box LLM agents with profile, memory, and action modules
+  (including review generation). Focuses on per-agent memory and human-like
+  behavior rather than centralized role switching and coordinated team dynamics.
+
 ## 7. Transfer Evaluation (Option A + Option B)
 
 The CLI includes a `run-transfer` command to evaluate transfer to real target models:

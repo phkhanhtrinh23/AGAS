@@ -213,6 +213,7 @@ class AGASEpisodeRunner:
             assignments = self.coordinator.assign_roles(observation=observation, worker_states=worker_states)
             policy = getattr(self.coordinator, "policy", None)
             coordinator_trace = getattr(policy, "last_trace", None)
+            coordinator_runtime_trace = getattr(self.coordinator, "last_runtime_trace", None)
 
             ctx = self.environment.build_worker_context()
             reports = []
@@ -249,6 +250,7 @@ class AGASEpisodeRunner:
                     "observation": observation.to_dict(),
                     "assignments": {aid: assn.to_dict() for aid, assn in assignments.items()},
                     "trace": coordinator_trace,
+                    "runtime_trace": coordinator_runtime_trace,
                 }
             )
 
@@ -260,6 +262,7 @@ class AGASEpisodeRunner:
                     "reports": [rep.to_dict() for rep in reports],
                     "feedback": feedback.to_dict(),
                     "coordinator_trace": coordinator_trace,
+                    "coordinator_runtime_trace": coordinator_runtime_trace,
                     "state_before": state_before,
                     "state_after": state_after,
                 }

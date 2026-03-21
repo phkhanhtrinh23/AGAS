@@ -17,7 +17,10 @@ class DefenseMonitorConfig:
     discount_weight: float = 0.35
     weak_rank_weight: float = 0.2
     streak_weight: float = 0.15
+    group_weight: float = 0.2
     weak_rank_threshold: int = 2
+    group_overlap_threshold: float = 0.6
+    group_target_required: bool = True
 
 
 class DefenseMonitorAgent:
@@ -69,6 +72,42 @@ class DefenseMonitorAgent:
         for outcome in outcomes:
             outcome_map.setdefault(outcome.action.agent_id, []).append(outcome)
 
+        action_items: Dict[str, List[str]] = {}
+        for agent_id in worker_states:
+            actions = report_map.get(
+                agent_id,
+                WorkerActionReport(step=step, agent_id=agent_id, role=worker_states[agent_id].current_role),
+            ).actions
+            action_items[agent_id] = [str(action.item_id) for action in actions]
+
+        group_overlap: Dict[str, float] = {aid: 0.0 for aid in worker_states}
+        group_suspicion: Dict[str, float] = {aid: 0.0 for aid in worker_states}
+        agent_ids = list(worker_states.keys())
+        for i, aid in enumerate(agent_ids):
+            items_a = set(action_items.get(aid, []))
+            if not items_a:
+                continue
+            for bid in agent_ids[i + 1 :]:
+                items_b = set(action_items.get(bid, []))
+                if not items_b:
+                    continue
+                union = items_a | items_b
+                if not union:
+                    continue
+                overlap = len(items_a & items_b) / len(union)
+                if overlap > group_overlap[aid]:
+                    group_overlap[aid] = overlap
+                if overlap > group_overlap[bid]:
+                    group_overlap[bid] = overlap
+
+        for aid in agent_ids:
+            overlap = group_overlap[aid]
+            if overlap < self.config.group_overlap_threshold:
+                continue
+            if self.config.group_target_required and target_item_id not in action_items.get(aid, []):
+                continue
+            group_suspicion[aid] = float(min(1.0, overlap))
+
         target_rank_delta = int(previous_rank - current_rank)
         public_signals: Dict[str, AgentBlackBoxSignal] = {}
         internal_detection_by_agent: Dict[str, List[str]] = {}
@@ -106,6 +145,7 @@ class DefenseMonitorAgent:
             suspicion_score += self.config.discount_weight * min(1.0, mean_discount / 2.0)
             suspicion_score += self.config.weak_rank_weight * (1.0 if weak_rank else 0.0)
             suspicion_score += self.config.streak_weight * min(1.0, streak / 3.0)
+            suspicion_score += self.config.group_weight * group_suspicion.get(agent_id, 0.0)
             suspicion_score = float(min(1.0, suspicion_score))
 
             notes: list[str] = []
@@ -117,6 +157,8 @@ class DefenseMonitorAgent:
                 notes.append("weak target-rank movement")
             if streak:
                 notes.append(f"suppression_streak={streak}")
+            if group_suspicion.get(agent_id, 0.0) > 0:
+                notes.append(f"group_overlap={group_overlap.get(agent_id, 0.0):.2f}")
 
             public_signals[agent_id] = AgentBlackBoxSignal(
                 agent_id=agent_id,
@@ -129,6 +171,8 @@ class DefenseMonitorAgent:
                 mean_discount=mean_discount,
                 suppression_streak=streak,
                 suspected_filtering_score=suspicion_score,
+                group_overlap=float(group_overlap.get(agent_id, 0.0)),
+                group_suspicion=float(group_suspicion.get(agent_id, 0.0)),
                 notes=", ".join(notes) if notes else "no visible suppression",
             )
 
@@ -142,6 +186,8 @@ class DefenseMonitorAgent:
                     internal_reasons.append("influence_discounting")
             if hidden_lockdown_active and any(not outcome.accepted for outcome in agent_outcomes):
                 internal_reasons.append("lockdown_pressure")
+            if group_suspicion.get(agent_id, 0.0) > 0:
+                internal_reasons.append("group_collusion")
             if internal_reasons:
                 internal_detection_by_agent[agent_id] = sorted(set(internal_reasons))
 

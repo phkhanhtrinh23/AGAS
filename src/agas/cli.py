@@ -11,7 +11,13 @@ from typing import Optional
 
 import pandas as pd
 
-from agas.agents.coordinator import Coordinator, LLMCoordinatorPolicy, RuleBasedCoordinatorPolicy
+from agas.agents.coordinator import (
+    Coordinator,
+    CoordinatorRuntimeConfig,
+    LLMCoordinatorPolicy,
+    RuleBasedCoordinatorPolicy,
+)
+from agas.agents.messages import AgentRole
 from agas.llm.prompt_store import PromptStore
 from agas.agents.worker import build_worker_pool
 from agas.data.pipeline import PreprocessConfig, preprocess_all
@@ -19,6 +25,7 @@ from agas.llm.providers import build_llm_client
 from agas.recsys.surrogate import LightweightSurrogateRecommender, SurrogateConfig
 from agas.recsys.targets import LightGCNRecommender, NeuMFRecommender, TargetModelConfig
 from agas.simulation.environment import AGASEnvironment, DefenseConfig
+from agas.agents.defender import DefenseMonitorConfig
 from agas.simulation.episode import AGASEpisodeRunner, EpisodeConfig, default_agent_ids
 
 
@@ -144,7 +151,24 @@ def _build_coordinator_and_workers(
             total_steps=total_steps,
         )
 
-    coordinator = Coordinator(policy=policy)
+    lock_role = AgentRole.INACTIVE
+    if getattr(args, "sniper_lock_role", None):
+        try:
+            lock_role = AgentRole(str(args.sniper_lock_role).lower())
+        except ValueError:
+            lock_role = AgentRole.INACTIVE
+
+    runtime_config = CoordinatorRuntimeConfig(
+        profiler_interval=args.profiler_interval,
+        profiler_probe_suspicion=args.profiler_probe_suspicion,
+        profiler_probe_on_stall=not args.no_profiler_probe_on_stall,
+        profiler_probe_suppression_streak=args.profiler_probe_suppression_streak,
+        sniper_lock_steps=args.sniper_lock_steps,
+        sniper_lock_suspicion=args.sniper_lock_suspicion,
+        sniper_lock_suppression_streak=args.sniper_lock_suppression_streak,
+        sniper_lock_role=lock_role,
+    )
+    coordinator = Coordinator(policy=policy, runtime_config=runtime_config)
     worker_policy_name = args.worker_policy
     worker_llm_client = None
     if worker_policy_name != "rule":
@@ -382,6 +406,11 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
             black_box_mode=not args.expose_defense_state,
             spike_threshold=args.spike_threshold,
             lockdown_drop_prob=args.lockdown_drop_prob,
+            monitor_config=DefenseMonitorConfig(
+                group_overlap_threshold=args.group_overlap_threshold,
+                group_target_required=args.group_target_required,
+                group_weight=args.group_weight,
+            ),
         ),
         seed=args.seed,
     )
@@ -502,6 +531,11 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
             black_box_mode=not args.expose_defense_state,
             spike_threshold=args.spike_threshold,
             lockdown_drop_prob=args.lockdown_drop_prob,
+            monitor_config=DefenseMonitorConfig(
+                group_overlap_threshold=args.group_overlap_threshold,
+                group_target_required=args.group_target_required,
+                group_weight=args.group_weight,
+            ),
         ),
         seed=args.seed,
     )
@@ -579,6 +613,11 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     black_box_mode=not args.expose_defense_state,
                     spike_threshold=args.spike_threshold,
                     lockdown_drop_prob=args.lockdown_drop_prob,
+                    monitor_config=DefenseMonitorConfig(
+                        group_overlap_threshold=args.group_overlap_threshold,
+                        group_target_required=args.group_target_required,
+                        group_weight=args.group_weight,
+                    ),
                 ),
                 seed=args.seed,
             )
@@ -713,6 +752,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_run.add_argument("--spike-threshold", type=int, default=2)
     p_run.add_argument("--lockdown-drop-prob", type=float, default=0.55)
+    p_run.add_argument("--profiler-interval", type=int, default=3)
+    p_run.add_argument("--profiler-probe-suspicion", type=float, default=0.35)
+    p_run.add_argument(
+        "--no-profiler-probe-on-stall",
+        action="store_true",
+        help="Disable profiler probes when target rank stalls.",
+    )
+    p_run.add_argument("--profiler-probe-suppression-streak", type=int, default=1)
+    p_run.add_argument("--sniper-lock-steps", type=int, default=2)
+    p_run.add_argument("--sniper-lock-suspicion", type=float, default=0.6)
+    p_run.add_argument("--sniper-lock-suppression-streak", type=int, default=2)
+    p_run.add_argument(
+        "--sniper-lock-role",
+        choices=["inactive", "camouflaguer"],
+        default="inactive",
+        help="Role to assign when a sniper is locked after suppression.",
+    )
+    p_run.add_argument("--group-overlap-threshold", type=float, default=0.6)
+    p_run.add_argument("--group-target-required", action=argparse.BooleanOptionalAction, default=True)
+    p_run.add_argument("--group-weight", type=float, default=0.2)
 
     p_run.add_argument("--output", default="outputs/episode_result.json")
     p_run.set_defaults(func=cmd_run_episode)
@@ -751,6 +810,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_transfer.add_argument("--spike-threshold", type=int, default=2)
     p_transfer.add_argument("--lockdown-drop-prob", type=float, default=0.55)
+    p_transfer.add_argument("--profiler-interval", type=int, default=3)
+    p_transfer.add_argument("--profiler-probe-suspicion", type=float, default=0.35)
+    p_transfer.add_argument(
+        "--no-profiler-probe-on-stall",
+        action="store_true",
+        help="Disable profiler probes when target rank stalls.",
+    )
+    p_transfer.add_argument("--profiler-probe-suppression-streak", type=int, default=1)
+    p_transfer.add_argument("--sniper-lock-steps", type=int, default=2)
+    p_transfer.add_argument("--sniper-lock-suspicion", type=float, default=0.6)
+    p_transfer.add_argument("--sniper-lock-suppression-streak", type=int, default=2)
+    p_transfer.add_argument(
+        "--sniper-lock-role",
+        choices=["inactive", "camouflaguer"],
+        default="inactive",
+        help="Role to assign when a sniper is locked after suppression.",
+    )
+    p_transfer.add_argument("--group-overlap-threshold", type=float, default=0.6)
+    p_transfer.add_argument("--group-target-required", action=argparse.BooleanOptionalAction, default=True)
+    p_transfer.add_argument("--group-weight", type=float, default=0.2)
 
     p_transfer.add_argument("--transfer-mode", choices=["both", "option-a", "option-b"], default="both")
     p_transfer.add_argument("--target-models", default="neumf,lightgcn")
