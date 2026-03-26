@@ -84,10 +84,10 @@ class WorkerAgent:
         self._trajectory_summary: List[Dict[str, Any]] = []
 
     def set_trajectory_summary(self, summary: List[Dict[str, Any]], total_steps: int | None = None) -> None:
-        """Attach a rolling episode summary for LLM context.
+        """Attach a rolling per-agent summary for LLM context.
 
         Args:
-            summary: Rolling list of recent step summaries.
+            summary: Rolling list of recent step summaries for this agent.
             total_steps: Optional total episode length for temperature scheduling.
         """
 
@@ -270,23 +270,30 @@ class WorkerAgent:
         system_by_role = {
             AgentRole.PROFILER: (
                 "You are the Profiler agent in an AGAS simulation. Choose benign ratings on benchmark "
-                "items to test whether the recommender is integrating new activity. Return strictly valid "
+                "items to test whether the recommender is integrating new activity. You receive a rolling "
+                "summary of your own recent actions and outcomes; use it to reason about past success or "
+                "suppression. Return strictly valid "
                 'JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}. '
             ),
             AgentRole.CAMOUFLAGEUR: (
                 "You are the Camouflaguer agent in an AGAS simulation. Choose plausible ratings on target-"
-                "domain or benign noise items to gain trust and avoid anomaly detection. Return strictly "
+                "domain or benign noise items to gain trust and avoid anomaly detection. You receive a "
+                "rolling summary of your own recent actions and outcomes; use it to reason about past "
+                "success or suppression. Return strictly "
                 'valid JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}. '
             ),
             AgentRole.SNIPER: (
                 "You are the Sniper attack agent in an AGAS simulation. Your goal is to promote the target "
                 "item aggressively and, when appropriate, demote nearby competitors. Operate within the "
-                "allowed candidate items and return concise reasons. Return strictly valid JSON: "
+                "allowed candidate items and return concise reasons. You receive a rolling summary of your "
+                "own recent actions and outcomes; use it to reason about past success or suppression. "
+                "Return strictly valid JSON: "
                 '{"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}. '
             ),
             AgentRole.INACTIVE: (
-                "You are the Inactive agent in an AGAS simulation. Return strictly valid JSON with an empty "
-                'action list: {"actions":[]}. '
+                "You are the Inactive agent in an AGAS simulation. You receive a rolling summary of your "
+                "own recent actions and outcomes; use it to reason about past success or suppression. "
+                'Return strictly valid JSON with an empty action list: {"actions":[]}. '
             ),
         }
         user_by_role = {

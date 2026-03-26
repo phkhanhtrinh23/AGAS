@@ -142,7 +142,7 @@ class AGASEpisodeRunner:
         }
 
     def _trajectory_summary(self, history: List[dict]) -> List[Dict[str, dict]]:
-        """Build a compact rolling summary of recent steps for LLM memory.
+        """Build a compact rolling summary of recent steps for coordinator memory.
 
         Args:
             history: Full episode history collected so far.
@@ -166,6 +166,52 @@ class AGASEpisodeRunner:
                     "total_candidates": int(entry["observation"]["total_candidates"]),
                     "alerts": dict(feedback.get("alerts_by_agent", {})),
                     "public_signals": defense.get("public_signals_by_agent", {}),
+                }
+            )
+        return summary
+
+    def _agent_trajectory_summary(self, history: List[dict], agent_id: str) -> List[Dict[str, dict]]:
+        """Build a per-agent rolling summary of recent steps.
+
+        Args:
+            history: Full episode history collected so far.
+            agent_id: Worker ID whose actions/outcomes should be summarized.
+
+        Returns:
+            List of per-step summaries for the last ``trajectory_window`` steps.
+        """
+
+        window = max(1, int(self.config.trajectory_window))
+        recent = history[-window:]
+        summary: List[Dict[str, dict]] = []
+        for entry in recent:
+            step = entry.get("step")
+            feedback = entry.get("feedback", {})
+            defense = feedback.get("defense_report") or {}
+            reports = entry.get("reports", [])
+            report = next((r for r in reports if r.get("agent_id") == agent_id), {})
+            actions = report.get("actions", [])
+            outcomes = [
+                o for o in feedback.get("outcomes", []) if o.get("action", {}).get("agent_id") == agent_id
+            ]
+            accepted = [o for o in outcomes if o.get("accepted")]
+            discounted = [o for o in outcomes if o.get("discount_applied")]
+            dropped = [o for o in outcomes if not o.get("accepted")]
+            discount_vals = [abs(o.get("discount_value", 0.0)) for o in discounted]
+            mean_discount = sum(discount_vals) / len(discount_vals) if discount_vals else 0.0
+            signal = (defense.get("public_signals_by_agent") or {}).get(agent_id, {})
+            summary.append(
+                {
+                    "step": int(step),
+                    "role": report.get("role"),
+                    "actions": [{"item_id": a.get("item_id"), "rating": a.get("rating")} for a in actions],
+                    "accepted_actions": len(accepted),
+                    "dropped_actions": len(dropped),
+                    "discounted_actions": len(discounted),
+                    "mean_discount": float(mean_discount),
+                    "target_rank": int(entry["observation"]["target_rank"]),
+                    "target_rank_delta": int(entry["observation"].get("target_rank_delta", 0)),
+                    "public_signal": signal,
                 }
             )
         return summary
@@ -219,7 +265,8 @@ class AGASEpisodeRunner:
             reports = []
             for agent_id in self.workers:
                 if hasattr(self.workers[agent_id], "set_trajectory_summary"):
-                    self.workers[agent_id].set_trajectory_summary(trajectory_summary, self.config.num_steps)
+                    agent_summary = self._agent_trajectory_summary(history, agent_id)
+                    self.workers[agent_id].set_trajectory_summary(agent_summary, self.config.num_steps)
                 report = self.workers[agent_id].act(assignments[agent_id], step=step, ctx=ctx)
                 reports.append(report)
 
