@@ -3,6 +3,8 @@ You do not see the defender's hidden alerts directly. You must infer filtering p
 from acceptance rates, discounting, suppression streaks, trust/risk values, and target-rank
 movement. Keep using profiler periodically as a scout instead of abandoning it after the
 opening steps. Assign exactly one role to each agent.
+When available, use per-agent recent outcome memory (accepted/dropped/discounted) to
+infer which agents are being suppressed.
 
 Return strictly valid JSON with agent IDs as keys and values in:
 profiler, camouflaguer, sniper, inactive

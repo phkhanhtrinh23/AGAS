@@ -275,6 +275,7 @@ class AGASEnvironment:
         step: int,
         worker_states: Dict[str, WorkerState],
         trajectory_summary: Optional[List[Dict[str, Any]]] = None,
+        agent_memory_by_agent: Optional[Dict[str, List[Dict[str, Any]]]] = None,
         total_steps: int | None = None,
     ) -> CoordinatorObservation:
         """Build observation message for coordinator.
@@ -299,6 +300,7 @@ class AGASEnvironment:
             target_rank_delta=self.last_rank_delta,
             total_steps=total_steps,
             trajectory_summary=trajectory_summary,
+            agent_memory_by_agent=dict(agent_memory_by_agent or {}),
             alerts_by_agent=exposed_alerts,
             trust_by_agent=trust,
             risk_by_agent=risk,

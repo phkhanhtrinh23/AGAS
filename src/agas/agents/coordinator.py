@@ -45,6 +45,7 @@ class CoordinatorRuntimeConfig:
     sniper_lock_steps: int = 2
     sniper_lock_suspicion: float = 0.6
     sniper_lock_suppression_streak: int = 2
+    sniper_lock_memory_events: int = 2
     sniper_lock_role: AgentRole = AgentRole.INACTIVE
 
 
@@ -410,7 +411,20 @@ class Coordinator:
                 continue
             suspicion, streak = self._suppression_metrics(observation, aid)
             alerted = aid in observation.alerts_by_agent
-            if alerted or suspicion >= self.runtime_config.sniper_lock_suspicion or streak >= self.runtime_config.sniper_lock_suppression_streak:
+            memory_events = 0
+            for entry in observation.agent_memory_by_agent.get(aid, [])[-3:]:
+                if int(entry.get("dropped_actions", 0)) > 0:
+                    memory_events += 1
+                if int(entry.get("discounted_actions", 0)) > 0:
+                    memory_events += 1
+            memory_trigger = memory_events >= int(self.runtime_config.sniper_lock_memory_events)
+
+            if (
+                alerted
+                or suspicion >= self.runtime_config.sniper_lock_suspicion
+                or streak >= self.runtime_config.sniper_lock_suppression_streak
+                or memory_trigger
+            ):
                 self._sniper_lockouts[aid] = max(self._sniper_lockouts.get(aid, 0), self.runtime_config.sniper_lock_steps)
 
     def _apply_lockouts(

@@ -20,6 +20,7 @@ class EpisodeConfig:
     goal_rank: int | None = 5
     stop_on_goal: bool = True
     trajectory_window: int = 5
+    coordinator_agent_memory: bool = False
     n_steps: int | None = None
     n_workers: int | None = None
 
@@ -254,6 +255,11 @@ class AGASEpisodeRunner:
                 step=step,
                 worker_states=worker_states,
                 trajectory_summary=trajectory_summary,
+                agent_memory_by_agent=(
+                    {aid: self._agent_trajectory_summary(history, aid) for aid in self.workers}
+                    if self.config.coordinator_agent_memory
+                    else None
+                ),
                 total_steps=self.config.num_steps,
             )
             assignments = self.coordinator.assign_roles(observation=observation, worker_states=worker_states)

@@ -166,6 +166,7 @@ def _build_coordinator_and_workers(
         sniper_lock_steps=args.sniper_lock_steps,
         sniper_lock_suspicion=args.sniper_lock_suspicion,
         sniper_lock_suppression_streak=args.sniper_lock_suppression_streak,
+        sniper_lock_memory_events=args.sniper_lock_memory_events,
         sniper_lock_role=lock_role,
     )
     coordinator = Coordinator(policy=policy, runtime_config=runtime_config)
@@ -431,6 +432,7 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
             goal_rank=args.goal_rank,
             stop_on_goal=args.stop_on_goal,
             trajectory_window=args.trajectory_window,
+            coordinator_agent_memory=bool(args.coordinator_agent_memory),
         ),
     )
     result = runner.run()
@@ -566,6 +568,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 goal_rank=args.goal_rank,
                 stop_on_goal=args.stop_on_goal,
                 trajectory_window=args.trajectory_window,
+                coordinator_agent_memory=bool(args.coordinator_agent_memory),
             ),
         )
         surrogate_result = runner.run()
@@ -638,6 +641,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     goal_rank=args.goal_rank,
                     stop_on_goal=args.stop_on_goal,
                     trajectory_window=args.trajectory_window,
+                    coordinator_agent_memory=bool(args.coordinator_agent_memory),
                 ),
             )
             result = runner.run()
@@ -736,6 +740,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_run.add_argument("--seed", type=int, default=42)
     p_run.add_argument("--trajectory-window", type=int, default=5)
+    p_run.add_argument(
+        "--coordinator-agent-memory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include per-agent recent outcomes in coordinator observation.",
+    )
 
     p_run.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama"], default="openai")
     p_run.add_argument("--llm-model", default="gpt-5-mini")
@@ -763,6 +773,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--sniper-lock-steps", type=int, default=2)
     p_run.add_argument("--sniper-lock-suspicion", type=float, default=0.6)
     p_run.add_argument("--sniper-lock-suppression-streak", type=int, default=2)
+    p_run.add_argument(
+        "--sniper-lock-memory-events",
+        type=int,
+        default=2,
+        help="Lock a sniper if its recent per-agent memory contains at least this many drop/discount events.",
+    )
     p_run.add_argument(
         "--sniper-lock-role",
         choices=["inactive", "camouflaguer"],
@@ -794,6 +810,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_transfer.add_argument("--seed", type=int, default=42)
     p_transfer.add_argument("--trajectory-window", type=int, default=5)
+    p_transfer.add_argument(
+        "--coordinator-agent-memory",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include per-agent recent outcomes in coordinator observation.",
+    )
 
     p_transfer.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama"], default="openai")
     p_transfer.add_argument("--llm-model", default="gpt-5-mini")
@@ -821,6 +843,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_transfer.add_argument("--sniper-lock-steps", type=int, default=2)
     p_transfer.add_argument("--sniper-lock-suspicion", type=float, default=0.6)
     p_transfer.add_argument("--sniper-lock-suppression-streak", type=int, default=2)
+    p_transfer.add_argument(
+        "--sniper-lock-memory-events",
+        type=int,
+        default=2,
+        help="Lock a sniper if its recent per-agent memory contains at least this many drop/discount events.",
+    )
     p_transfer.add_argument(
         "--sniper-lock-role",
         choices=["inactive", "camouflaguer"],

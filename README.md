@@ -291,6 +291,9 @@ The output includes per-agent `group_overlap` and `group_suspicion` in
   - **Option B (in-loop):** replace the surrogate with a target model and
     retrain it each step for live feedback.
 
+Coordinator can optionally receive per-agent recent outcomes (richer than public
+aggregate signals) via `--coordinator-agent-memory`.
+
 ## Related Papers (Short Positioning)
 
 - **AgentAttack: LLM Agents for Multi-Strategy Shilling Attacks (2026)**  

@@ -6,9 +6,9 @@ set -euo pipefail
 PYTHONPATH=src python -m agas.cli run-episode \
   --processed-root processed \
   --dataset ml-latest-small \
-  --max-interactions 5000 \
+  --max-interactions 10000 \
   --n-factors 24 \
-  --target-item-id 123 \
+  --target-item-id 200 \
   --goal-rank 3 \
   --num-steps 20 \
   --num-agents 4 \
