@@ -294,6 +294,8 @@ The output includes per-agent `group_overlap` and `group_suspicion` in
 Coordinator can optionally receive per-agent recent outcomes (richer than public
 aggregate signals) via `--coordinator-agent-memory`.
 
+Detailed algorithm: `docs/coordinator_agent_memory_algorithm.md`.
+
 ## Related Papers (Short Positioning)
 
 - **AgentAttack: LLM Agents for Multi-Strategy Shilling Attacks (2026)**  
