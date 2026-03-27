@@ -412,6 +412,9 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
                 group_target_required=args.group_target_required,
                 group_weight=args.group_weight,
             ),
+            quarantine_steps=int(args.quarantine_steps),
+            quarantine_on_spike_alert=bool(args.quarantine_on_spike_alert),
+            quarantine_on_group_collusion=bool(args.quarantine_on_group_collusion),
         ),
         seed=args.seed,
     )
@@ -538,6 +541,9 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 group_target_required=args.group_target_required,
                 group_weight=args.group_weight,
             ),
+            quarantine_steps=int(args.quarantine_steps),
+            quarantine_on_spike_alert=bool(args.quarantine_on_spike_alert),
+            quarantine_on_group_collusion=bool(args.quarantine_on_group_collusion),
         ),
         seed=args.seed,
     )
@@ -621,6 +627,9 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                         group_target_required=args.group_target_required,
                         group_weight=args.group_weight,
                     ),
+                    quarantine_steps=int(args.quarantine_steps),
+                    quarantine_on_spike_alert=bool(args.quarantine_on_spike_alert),
+                    quarantine_on_group_collusion=bool(args.quarantine_on_group_collusion),
                 ),
                 seed=args.seed,
             )
@@ -762,6 +771,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_run.add_argument("--spike-threshold", type=int, default=2)
     p_run.add_argument("--lockdown-drop-prob", type=float, default=0.55)
+    p_run.add_argument("--quarantine-steps", type=int, default=0)
+    p_run.add_argument(
+        "--quarantine-on-spike-alert",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Quarantine accounts after spike detector triggers.",
+    )
+    p_run.add_argument(
+        "--quarantine-on-group-collusion",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Quarantine accounts after group-collusion triggers.",
+    )
     p_run.add_argument("--profiler-interval", type=int, default=3)
     p_run.add_argument("--profiler-probe-suspicion", type=float, default=0.35)
     p_run.add_argument(
@@ -832,6 +854,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_transfer.add_argument("--spike-threshold", type=int, default=2)
     p_transfer.add_argument("--lockdown-drop-prob", type=float, default=0.55)
+    p_transfer.add_argument("--quarantine-steps", type=int, default=0)
+    p_transfer.add_argument(
+        "--quarantine-on-spike-alert",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Quarantine accounts after spike detector triggers.",
+    )
+    p_transfer.add_argument(
+        "--quarantine-on-group-collusion",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Quarantine accounts after group-collusion triggers.",
+    )
     p_transfer.add_argument("--profiler-interval", type=int, default=3)
     p_transfer.add_argument("--profiler-probe-suspicion", type=float, default=0.35)
     p_transfer.add_argument(

@@ -280,6 +280,33 @@ agas run-episode \
 The output includes per-agent `group_overlap` and `group_suspicion` in
 `history[*].feedback.defense_report.public_signals_by_agent`.
 
+### Defense Quarantine (Temporary Bans)
+
+The environment can optionally model temporary account quarantine (a defense-side action)
+after certain internal detections (spike alerts or group collusion). While quarantined,
+all actions from that agent are dropped with reason `Dropped: account quarantined by defense`.
+
+CLI knobs:
+
+- `--quarantine-steps` (default `0`, disabled)
+- `--quarantine-on-spike-alert / --no-quarantine-on-spike-alert`
+- `--quarantine-on-group-collusion / --no-quarantine-on-group-collusion`
+
+Example:
+
+```bash
+agas run-episode \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --target-item-id 101 \
+  --num-steps 8 \
+  --spike-threshold 1 \
+  --group-overlap-threshold 0.2 \
+  --group-target-required \
+  --quarantine-steps 2 \
+  --output outputs/quarantine_example.json
+```
+
 ### Surrogate vs Target Models (Option A vs B)
 
 - The **surrogate model** is the lightweight SVD-based recommender in

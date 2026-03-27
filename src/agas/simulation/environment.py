@@ -36,6 +36,9 @@ class DefenseConfig:
     risk_gain_extreme_scale: float = 0.35
     risk_gain_alert: float = 0.8
     monitor_config: Optional[DefenseMonitorConfig] = None
+    quarantine_steps: int = 0
+    quarantine_on_spike_alert: bool = True
+    quarantine_on_group_collusion: bool = True
 
 
 class AGASEnvironment:
@@ -114,6 +117,7 @@ class AGASEnvironment:
         self.last_public_signals: Dict[str, dict] = {}
         self.last_public_notes: Optional[str] = None
         self.last_defense_report = None
+        self._quarantined_until: Dict[str, int] = {}
 
         self.target_cluster_item_ids = self._resolve_target_cluster_items()
         self.benchmark_items = self._resolve_benchmark_items()
@@ -337,7 +341,7 @@ class AGASEnvironment:
 
         for action in all_actions:
             state = worker_states[action.agent_id]
-            accepted, eff_rating, trust_delta, risk_delta, reason = self._apply_action_with_defense(action, state)
+            accepted, eff_rating, trust_delta, risk_delta, reason = self._apply_action_with_defense(step, action, state)
             discount_value = 0.0
             discount_applied = False
             if accepted and eff_rating is not None:
@@ -397,6 +401,23 @@ class AGASEnvironment:
         self.last_public_notes = defense_report.notes
         self.last_defense_report = defense_report
 
+        # Optional defense escalation: quarantine accounts for a few steps after
+        # certain internal detections. This is a defense-side mechanism (not an
+        # attacker strategy) to model temporary suspensions/holds.
+        if self.config.quarantine_steps > 0 and defense_report.internal_detection_by_agent:
+            for aid, reasons in defense_report.internal_detection_by_agent.items():
+                reason_set = set(map(str, reasons))
+                should_quarantine = False
+                if self.config.quarantine_on_spike_alert and "sudden_spike_detector" in reason_set:
+                    should_quarantine = True
+                if self.config.quarantine_on_group_collusion and "group_collusion" in reason_set:
+                    should_quarantine = True
+                if should_quarantine:
+                    self._quarantined_until[aid] = max(
+                        int(self._quarantined_until.get(aid, -1)),
+                        int(step + self.config.quarantine_steps),
+                    )
+
         notes = "Lockdown active" if self.lockdown_active else "Normal filtering"
         return EnvironmentFeedback(
             step=step,
@@ -410,12 +431,14 @@ class AGASEnvironment:
 
     def _apply_action_with_defense(
         self,
+        step: int,
         action: RatingAction,
         state: WorkerState,
     ) -> tuple[bool, Optional[float], float, float, str]:
         """Apply influence discounting and lockdown logic to one worker action.
 
         Args:
+            step: Current episode step index.
             action: Worker-issued rating action to evaluate.
             state: Current mutable state for the action's worker.
 
@@ -425,6 +448,10 @@ class AGASEnvironment:
 
         trust_delta = self.config.trust_gain_action
         risk_delta = 0.02
+
+        quarantined_until = int(self._quarantined_until.get(action.agent_id, -1))
+        if self.config.quarantine_steps > 0 and step < quarantined_until:
+            return (False, None, 0.0, risk_delta + 0.2, "Dropped: account quarantined by defense")
 
         item_bias = self.recommender.global_mean
         if action.item_id in self.recommender.item_to_idx and self.recommender.item_bias is not None:
