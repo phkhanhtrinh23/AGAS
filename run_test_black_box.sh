@@ -3,6 +3,7 @@ set -euo pipefail
 
 : "${OPENAI_API_KEY:?OPENAI_API_KEY is required}"
 
+## Online attack
 # PYTHONPATH=src python -m agas.cli run-episode \
 #   --processed-root processed \
 #   --dataset ml-latest-small \
@@ -20,6 +21,7 @@ set -euo pipefail
 #   --stop-on-goal \
 #   --output outputs/episode_result_blackbox.json
 
+## Offline attack
 PYTHONPATH=src python -m agas.cli run-transfer \
   --processed-root processed \
   --dataset ml-latest-small \

@@ -41,9 +41,15 @@ For each agent and each recent step, the summary includes:
 
 This is built from the existing history; it does not require hidden defense state.
 
-## End-to-End Algorithm
+## End-to-End Algorithm (Episode Loop)
 
-This is the full “beginning to end” logic for one episode run.
+This section is the full “beginning to end” logic for one *episode run*.
+
+An episode is the step-by-step interaction loop used by:
+
+- `agas run-episode` (online simulation against the surrogate), and
+- the *surrogate* phase of `agas run-transfer --transfer-mode option-a` (offline transfer), and
+- `agas run-transfer --transfer-mode option-b` (in-loop target model).
 
 ### 0. Initialization
 
@@ -187,3 +193,91 @@ The runner returns `EpisodeResult`:
 - This feature is **not realistic black-box** if you interpret each fake account as isolated.
   It assumes a centralized attacker can collect each agent’s own outcomes and share them upward.
 - It *is* realistic if you interpret “agents” as controlled accounts in the same botnet controlled by one operator.
+
+## Attack Pipelines (Online vs Offline)
+
+This repository supports two distinct experiment pipelines. Both reuse the same episode loop above, but differ in
+*what recommender is being updated* and *when the victim model is trained*.
+
+### Pipeline 1: Online Simulation (Surrogate Victim)
+
+Command:
+
+```bash
+agas run-episode ...
+```
+
+Meaning:
+
+- The **victim model** is the surrogate recommender (`src/agas/recsys/surrogate.py`).
+- Each step appends accepted interactions and immediately refits the surrogate (`append_interactions(..., refit=True)`).
+- The coordinator receives per-step feedback (rank movement + black-box signals) and can adapt during the run.
+
+High-level flow:
+
+1. Fit surrogate on a slice of `processed/<dataset>/interactions.csv`.
+2. Run an episode of `T` steps:
+   - coordinator assigns roles
+   - workers emit actions
+   - environment applies defenses, updates trust/risk, refits surrogate, recomputes rank
+3. Save an episode JSON containing the full timeline and outcomes.
+
+`--coordinator-agent-memory` applies here: it enriches the coordinator’s observation during the episode loop.
+
+### Pipeline 2: Offline Transfer (Target Victim Models)
+
+Command:
+
+```bash
+agas run-transfer --transfer-mode option-a ...
+```
+
+Meaning:
+
+- The **victim models** are target recommenders (e.g., NeuMF, LightGCN).
+- The episode loop runs **only on the surrogate** to generate attack interactions.
+- After the episode finishes, each target model is trained offline on:
+  - clean interactions, and
+  - clean + injected (accepted) attack interactions
+- Then we re-evaluate the target item’s rank shift on the target model.
+
+High-level flow:
+
+1. Fit surrogate on a slice of `processed/<dataset>/interactions.csv`.
+2. Run the episode loop on the surrogate for up to `T` steps to produce a timeline.
+3. Extract the accepted actions from the timeline:
+   - each accepted action becomes one appended interaction row
+   - we use `effective_rating` when discounting occurred (still accepted, but with reduced effect)
+4. For each target model `M`:
+   - fit `M_clean` on clean interactions
+   - fit `M_poisoned` on clean + attack interactions
+   - compute `rank_clean` and `rank_poisoned` for the target item
+5. Save a transfer JSON (includes both the transfer stats and the surrogate episode history).
+
+`--coordinator-agent-memory` applies only to step 2 (the surrogate episode generation). It does not give you
+“real victim detection feedback” because the target model is trained only after the episode ends.
+
+### Pipeline 3: In-Loop Target Victim (Heavier)
+
+Command:
+
+```bash
+agas run-transfer --transfer-mode option-b ...
+```
+
+Meaning:
+
+- The **victim model** inside the environment is a real target recommender (NeuMF/LightGCN).
+- The environment appends accepted interactions and refits the target model **each step** (heavier compute).
+- This gives per-step feedback from the target model, which enables true in-loop adaptation.
+
+High-level flow:
+
+1. Fit target model `M` on the clean interactions.
+2. Run the episode loop with `recommender=M`:
+   - workers emit actions
+   - environment applies defenses, appends accepted interactions, refits `M`, recomputes rank
+3. Save a transfer JSON containing per-step history for the target model run.
+
+`--coordinator-agent-memory` applies here as well: it enriches the coordinator observation during the target-model
+episode loop.
