@@ -6,6 +6,25 @@ This document explains the full algorithm behind the optional *per-agent memory 
 The goal is to let the coordinator reason about *which specific agents* were suppressed recently
 (dropped or discounted actions) and adapt assignments accordingly.
 
+## Roles (Profiler, Camouflaguer, Sniper, Inactive)
+
+The episode loop assigns each worker one role per step. Roles determine what actions a worker attempts and what
+item pools it draws from.
+
+- **Profiler**: probes whether the system is integrating new ratings by rating popular benchmark items.
+  Purpose: gather black-box feedback about filtering/lockdown with minimal risk.
+- **Camouflaguer**: blends into the target-domain cluster and builds trust using plausible target-cluster and/or
+  benign noise ratings. Purpose: reduce anomaly signals and increase future influence weight.
+- **Sniper**: delivers payload ratings for rank distortion by promoting the target item and (optionally)
+  down-rating competitor items. Purpose: shift target rank.
+- **Inactive**: takes no action. Purpose: reduce activity velocity and allow risk to cool down.
+
+Implementation references:
+
+- Worker behavior: `src/agas/agents/worker.py` (`_act_profiler`, `_act_camouflaguer`, `_act_sniper`)
+- Candidate pools per role: `src/agas/simulation/environment.py` (`build_worker_context`)
+- Coordinator assignment + guardrails: `src/agas/agents/coordinator.py`
+
 ## What “Memory” Means Here
 
 There are two different rolling summaries in the simulation:
@@ -143,6 +162,13 @@ Each worker receives:
 - candidate item pools
 
 It returns a `WorkerActionReport` with a list of rating actions.
+
+How role maps to actions:
+
+- Profiler: selects from `benchmark_items` and emits benign ratings.
+- Camouflaguer: selects from `target_cluster_items` and/or `noise_items` and emits plausible ratings.
+- Sniper: rates `target_item_id` and may include a small number of `competitor_items`.
+- Inactive: emits no actions.
 
 #### 1.6 Environment Executes (Defense + Online Update)
 
