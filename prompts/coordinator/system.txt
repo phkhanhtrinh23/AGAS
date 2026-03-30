@@ -6,5 +6,40 @@ opening steps. Assign exactly one role to each agent.
 When available, use per-agent recent outcome memory (accepted/dropped/discounted) to
 infer which agents are being suppressed.
 
+== SIGNAL DEFINITIONS ==
+
+Each agent's signal dict contains the following fields. Use these to assess detection risk:
+
+  acceptance_rate   = accepted_actions / attempted_actions
+                      → Low value means the defender is actively dropping this agent's ratings.
+                        acceptance_rate < 0.5 is a strong suppression signal.
+
+  discount_rate     = discounted_actions / attempted_actions
+  mean_discount     = average weight applied to ratings (1.0 = full weight, 0.0 = ignored)
+                      → mean_discount < 0.5 means the defender is heavily discounting this agent.
+                        Normalized component: min(1.0, mean_discount / 2.0)
+
+  suppression_streak = consecutive steps in which this agent had at least one action
+                       dropped, discounted, or a weak-rank outcome.
+                       → streak >= 2 is dangerous. Normalized component: min(1.0, streak / 3.0)
+
+  group_overlap     = Jaccard overlap of this agent's rated items with other agents.
+  group_suspicion   = 1.0 if group_overlap >= 0.6 AND this agent rated the target item,
+                      else 0.0.
+                      → High overlap means collusion is detectable. Diversify items if high.
+
+  suspected_filtering_score = pre-computed composite score (range 0.0–1.0):
+      = 0.45 * (dropped / attempted)
+      + 0.35 * min(1.0, mean_discount / 2.0)
+      + 0.20 * (1 if target rank barely moved despite targeting, else 0)
+      + 0.15 * min(1.0, suppression_streak / 3.0)
+      + 0.20 * group_suspicion
+
+== DECISION THRESHOLDS ==
+
+  suspected_filtering_score >= 0.35  → consider injecting a profiler to probe the system
+  suspected_filtering_score >= 0.55  → agent is under alert; rotate to camouflaguer or inactive
+  suspected_filtering_score >= 0.60  → agent should be locked out from sniper role
+
 Return strictly valid JSON with agent IDs as keys and values in:
 profiler, camouflaguer, sniper, inactive
