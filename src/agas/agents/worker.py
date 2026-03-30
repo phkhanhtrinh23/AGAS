@@ -42,6 +42,8 @@ class WorkerPolicyConfig:
     profiler_actions: int = 3
     camouflaguer_actions: int = 2
     sniper_competitor_actions: int = 2
+    implicit_safe: bool = False
+    positive_threshold: float = 4.0
 
 
 class WorkerAgent:
@@ -176,6 +178,35 @@ class WorkerAgent:
             return unique_pool
         return self._rand.sample(unique_pool, n)
 
+    def _safe_rating_below_threshold(self) -> float:
+        """Pick a plausible explicit rating that stays below the implicit positive threshold."""
+
+        threshold = float(getattr(self.config, "positive_threshold", 4.0))
+        # Prefer neutral-ish ratings that look realistic but do not become implicit positives.
+        candidates = []
+        for value, weight in ((3.0, 0.75), (2.0, 0.2), (1.0, 0.05)):
+            if value < threshold:
+                candidates.append((value, weight))
+        if not candidates:
+            return 1.0
+        values, weights = zip(*candidates)
+        r = self._rand.random()
+        total = float(sum(weights))
+        acc = 0.0
+        for value, weight in zip(values, weights):
+            acc += float(weight) / total
+            if r <= acc:
+                return float(value)
+        return float(values[-1])
+
+    def _implicit_safe_target_rating(self) -> float:
+        """Return a non-spiky positive rating for the target item in implicit-safe mode."""
+
+        threshold = float(getattr(self.config, "positive_threshold", 4.0))
+        # Keep this < 5.0 to avoid the environment's spike detector (which triggers on >= 5.0).
+        # Default threshold is 4.0, so 4.0 becomes a safe "positive" interaction.
+        return float(min(4.0, max(1.0, threshold)))
+
     def _act_profiler(self, ctx: WorkerContext) -> List[RatingAction]:
         """Emit benign ratings on popular benchmark items to probe system acceptance.
 
@@ -188,8 +219,22 @@ class WorkerAgent:
 
         sampled = self._sample_items(ctx.benchmark_items, self.config.profiler_actions)
         out = []
+        if self.config.implicit_safe:
+            out.append(
+                RatingAction(
+                    agent_id=self.state.agent_id,
+                    item_id=str(ctx.target_item_id),
+                    rating=self._implicit_safe_target_rating(),
+                    reason="Profiler anchors the target as a known positive while probing acceptance.",
+                )
+            )
+            sampled = [i for i in sampled if str(i) != str(ctx.target_item_id)]
+            sampled = sampled[: max(0, int(self.config.profiler_actions) - 1)]
         for item_id in sampled:
-            rating = 5.0 if self._rand.random() < 0.7 else 4.0
+            if self.config.implicit_safe:
+                rating = self._safe_rating_below_threshold()
+            else:
+                rating = 5.0 if self._rand.random() < 0.7 else 4.0
             out.append(
                 RatingAction(
                     agent_id=self.state.agent_id,
@@ -215,8 +260,22 @@ class WorkerAgent:
             focus_items = list(ctx.noise_items) + focus_items
         sampled = self._sample_items(focus_items, self.config.camouflaguer_actions)
         out = []
+        if self.config.implicit_safe:
+            out.append(
+                RatingAction(
+                    agent_id=self.state.agent_id,
+                    item_id=str(ctx.target_item_id),
+                    rating=self._implicit_safe_target_rating(),
+                    reason="Camouflaguer softly reinforces the target as a positive without spiking.",
+                )
+            )
+            sampled = [i for i in sampled if str(i) != str(ctx.target_item_id)]
+            sampled = sampled[: max(0, int(self.config.camouflaguer_actions) - 1)]
         for item_id in sampled:
-            rating = self._rand.choice([3.0, 4.0, 5.0])
+            if self.config.implicit_safe:
+                rating = self._safe_rating_below_threshold()
+            else:
+                rating = self._rand.choice([3.0, 4.0, 5.0])
             out.append(
                 RatingAction(
                     agent_id=self.state.agent_id,
@@ -245,7 +304,10 @@ class WorkerAgent:
                 reason="Sniper payload maximally promotes the target item.",
             )
         ]
-        competitor_items = self._sample_items(ctx.competitor_items, self.config.sniper_competitor_actions)
+        competitor_actions = int(self.config.sniper_competitor_actions)
+        if self.config.implicit_safe:
+            competitor_actions = 0
+        competitor_items = self._sample_items(ctx.competitor_items, competitor_actions)
         for item_id in competitor_items:
             out.append(
                 RatingAction(
@@ -329,9 +391,14 @@ class WorkerAgent:
         """
 
         if role == AgentRole.PROFILER:
-            return list(ctx.benchmark_items[:50]), self.config.profiler_actions
+            focus = list(ctx.benchmark_items[:50])
+            if self.config.implicit_safe:
+                focus = [str(ctx.target_item_id)] + focus
+            return list(dict.fromkeys(focus)), self.config.profiler_actions
         if role == AgentRole.CAMOUFLAGEUR:
             focus = list(ctx.target_cluster_items[:40]) + list(ctx.noise_items[:20])
+            if self.config.implicit_safe:
+                focus = [str(ctx.target_item_id)] + focus
             return list(dict.fromkeys(focus)), self.config.camouflaguer_actions
         if role == AgentRole.SNIPER:
             focus = [str(ctx.target_item_id)] + list(ctx.competitor_items[:10])
@@ -382,11 +449,14 @@ class WorkerAgent:
             if role == AgentRole.SNIPER:
                 rating = 5.0 if item_id == str(ctx.target_item_id) else 1.0
             else:
-                try:
-                    rating = float(raw.get("rating"))
-                except (TypeError, ValueError):
-                    continue
-                rating = min(5.0, max(1.0, rating))
+                if self.config.implicit_safe:
+                    rating = self._safe_rating_below_threshold()
+                else:
+                    try:
+                        rating = float(raw.get("rating"))
+                    except (TypeError, ValueError):
+                        continue
+                    rating = min(5.0, max(1.0, rating))
             sanitized.append(
                 RatingAction(
                     agent_id=self.state.agent_id,
@@ -494,6 +564,7 @@ class WorkerAgent:
 def build_worker_pool(
     agent_ids: Sequence[str],
     seed: int = 42,
+    policy_config: WorkerPolicyConfig | None = None,
     llm_client: LLMClient | None = None,
     prompt_store: PromptStore | None = None,
     policy_name: str = "rule",
@@ -519,6 +590,7 @@ def build_worker_pool(
         state = WorkerState(agent_id=agent_id)
         pool[agent_id] = WorkerAgent(
             state=state,
+            config=policy_config,
             seed=seed + idx,
             llm_client=llm_client,
             prompt_store=prompt_store,

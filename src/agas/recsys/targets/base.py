@@ -21,6 +21,7 @@ class TargetModelConfig:
     weight_decay: float = 1e-5
     num_negatives: int = 4
     positive_threshold: float = 4.0
+    implicit_only: bool = True
     seed: int = 42
     device: str = "cpu"
     lightgcn_layers: int = 2
@@ -52,24 +53,36 @@ class BaseTargetRecommender:
             Self for chaining.
         """
 
-        frame = interactions[["user_id", "item_id", "rating"]].copy()
-        frame["user_id"] = frame["user_id"].astype(str)
-        frame["item_id"] = frame["item_id"].astype(str)
-        self.interactions = frame
+        frame_full = interactions[["user_id", "item_id", "rating"]].copy()
+        frame_full["user_id"] = frame_full["user_id"].astype(str)
+        frame_full["item_id"] = frame_full["item_id"].astype(str)
+        frame_full["rating"] = pd.to_numeric(frame_full["rating"], errors="coerce")
+        frame_full = frame_full.dropna(subset=["user_id", "item_id", "rating"])
+        self.interactions = frame_full
         self.items = items.copy() if items is not None else None
 
-        users = frame["user_id"].drop_duplicates().tolist()
-        items_list = frame["item_id"].drop_duplicates().tolist()
+        users = frame_full["user_id"].drop_duplicates().tolist()
+        if items is not None and "item_id" in items.columns:
+            # Use metadata items as the base vocabulary, but include any item IDs that appear
+            # in interactions (e.g., injected target items that may not exist in metadata).
+            meta_items = items["item_id"].astype(str).drop_duplicates().tolist()
+            observed_items = frame_full["item_id"].drop_duplicates().tolist()
+            items_list = list(dict.fromkeys([*meta_items, *observed_items]))
+        else:
+            items_list = frame_full["item_id"].drop_duplicates().tolist()
         self.user_to_idx = {u: i for i, u in enumerate(users)}
         self.item_to_idx = {i: j for j, i in enumerate(items_list)}
         self.idx_to_user = list(users)
         self.idx_to_item = list(items_list)
 
-        self.global_mean = float(frame["rating"].mean()) if len(frame) else 0.0
-        bias = frame.groupby("item_id")["rating"].mean()
+        self.global_mean = float(frame_full["rating"].mean()) if len(frame_full) else 0.0
+        bias = frame_full.groupby("item_id")["rating"].mean()
         self.item_bias = np.array([float(bias.get(i, self.global_mean)) for i in self.idx_to_item])
 
-        self._fit_model(frame)
+        frame_train = frame_full
+        if self.config.implicit_only:
+            frame_train = frame_full[frame_full["rating"] >= float(self.config.positive_threshold)].copy()
+        self._fit_model(frame_train)
         return self
 
     def append_interactions(self, new_interactions: pd.DataFrame, refit: bool = True) -> None:

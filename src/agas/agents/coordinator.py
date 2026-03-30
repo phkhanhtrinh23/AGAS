@@ -54,6 +54,7 @@ class RuleBasedCoordinatorPolicy:
     """Rule-based policy that reproduces the described AGAS episode logic."""
 
     agent_order: Sequence[str] | None = None
+    max_snipers: int = 1
 
     @staticmethod
     def _black_box_suspicion(observation: CoordinatorObservation, agent_id: str) -> float:
@@ -156,9 +157,10 @@ class RuleBasedCoordinatorPolicy:
         )
 
         if observation.target_rank > 5 and ranked:
-            best = ranked[0]
-            assignments[best].role = AgentRole.SNIPER
-            assignments[best].rationale = "Use the strongest trusted profile for the next payload step."
+            max_snipers = max(0, int(self.max_snipers))
+            for best in ranked[:max_snipers]:
+                assignments[best].role = AgentRole.SNIPER
+                assignments[best].rationale = "Use the strongest trusted profile for the next payload step."
 
         support_pool = [aid for aid in ranked if assignments[aid].role == AgentRole.INACTIVE]
         for aid in support_pool[:3]:

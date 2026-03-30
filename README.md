@@ -358,6 +358,13 @@ agas run-transfer \
   --output outputs/transfer_result.json
 ```
 
+To generate attack interactions using a heavier in-loop recommender while still
+reporting offline transfer to multiple target models (Option A), set:
+
+```bash
+agas run-transfer --transfer-mode option-a --episode-model lightgcn --target-models neumf,lightgcn ...
+```
+
 Tune target model training as needed:
 
 ```bash

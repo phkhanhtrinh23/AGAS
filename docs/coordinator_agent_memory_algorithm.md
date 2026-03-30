@@ -261,7 +261,8 @@ agas run-transfer --transfer-mode option-a ...
 Meaning:
 
 - The **victim models** are target recommenders (e.g., NeuMF, LightGCN).
-- The episode loop runs **only on the surrogate** to generate attack interactions.
+- The episode loop runs on a configured **episode recommender** (default: surrogate) to generate attack interactions
+  (see `agas run-transfer --episode-model ...`).
 - After the episode finishes, each target model is trained offline on:
   - clean interactions, and
   - clean + injected (accepted) attack interactions

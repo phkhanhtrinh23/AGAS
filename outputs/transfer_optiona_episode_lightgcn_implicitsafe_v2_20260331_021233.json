@@ -1,0 +1,376 @@
+{
+  "dataset": "ml-latest-small",
+  "processed_root": "processed",
+  "max_interactions": "10000",
+  "n_factors": 24,
+  "seed": 42,
+  "episode_model": "lightgcn",
+  "target_item_id": "1215",
+  "target_keyword": "horror",
+  "num_steps": 20,
+  "num_agents": 4,
+  "coordinator_policy": "rule",
+  "worker_policy": "rule",
+  "transfer_mode": "option-a",
+  "target_models": [
+    "lightgcn",
+    "neumf"
+  ],
+  "transfer_candidate_set": "all_items",
+  "transfer_candidate_set_size": 9742,
+  "target_embedding_dim": 32,
+  "target_epochs": 3,
+  "target_batch_size": 2048,
+  "target_lr": 0.001,
+  "target_weight_decay": 1e-05,
+  "target_num_negatives": 4,
+  "target_positive_threshold": 4.0,
+  "target_implicit_only": true,
+  "target_device": "cpu",
+  "target_lightgcn_layers": 2,
+  "option_a": {
+    "lightgcn": {
+      "initial_rank": 954,
+      "initial_total_candidates": 9742,
+      "final_rank": 9,
+      "final_total_candidates": 9742,
+      "rank_delta": 945,
+      "attack_interactions": 3
+    },
+    "neumf": {
+      "initial_rank": 7998,
+      "initial_total_candidates": 9742,
+      "final_rank": 2778,
+      "final_total_candidates": 9742,
+      "rank_delta": 5220,
+      "attack_interactions": 3
+    }
+  },
+  "option_b": null,
+  "surrogate_episode_history": [
+    {
+      "step": 0,
+      "observation": {
+        "step": 0,
+        "target_item_id": "1215",
+        "target_rank": 82,
+        "total_candidates": 978,
+        "target_rank_delta": 0,
+        "total_steps": 20,
+        "trajectory_summary": [],
+        "agent_memory_by_agent": {
+          "agent_1": [],
+          "agent_2": [],
+          "agent_3": [],
+          "agent_4": []
+        },
+        "alerts_by_agent": {},
+        "trust_by_agent": {
+          "agent_1": 0.0,
+          "agent_2": 0.0,
+          "agent_3": 0.0,
+          "agent_4": 0.0
+        },
+        "risk_by_agent": {
+          "agent_1": 0.0,
+          "agent_2": 0.0,
+          "agent_3": 0.0,
+          "agent_4": 0.0
+        },
+        "signals_by_agent": {},
+        "lockdown_active": false,
+        "notes": null
+      },
+      "assignments": {
+        "agent_1": {
+          "step": 0,
+          "agent_id": "agent_1",
+          "role": "profiler",
+          "rationale": "Probe if recommender is accepting new ratings without triggering bans."
+        },
+        "agent_2": {
+          "step": 0,
+          "agent_id": "agent_2",
+          "role": "inactive",
+          "rationale": "Default temporal reset to minimize velocity anomaly risk."
+        },
+        "agent_3": {
+          "step": 0,
+          "agent_id": "agent_3",
+          "role": "inactive",
+          "rationale": "Default temporal reset to minimize velocity anomaly risk."
+        },
+        "agent_4": {
+          "step": 0,
+          "agent_id": "agent_4",
+          "role": "inactive",
+          "rationale": "Default temporal reset to minimize velocity anomaly risk."
+        }
+      },
+      "reports": [
+        {
+          "step": 0,
+          "agent_id": "agent_1",
+          "role": "profiler",
+          "actions": [
+            {
+              "agent_id": "agent_1",
+              "item_id": "1215",
+              "rating": 4.0,
+              "reason": "Profiler anchors the target as a known positive while probing acceptance."
+            },
+            {
+              "agent_id": "agent_1",
+              "item_id": "1221",
+              "rating": 3.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            {
+              "agent_id": "agent_1",
+              "item_id": "58559",
+              "rating": 3.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            }
+          ],
+          "notes": "Probe if recommender is accepting new ratings without triggering bans.",
+          "policy": "rule",
+          "trace": null
+        },
+        {
+          "step": 0,
+          "agent_id": "agent_2",
+          "role": "inactive",
+          "actions": [],
+          "notes": null,
+          "policy": "rule",
+          "trace": null
+        },
+        {
+          "step": 0,
+          "agent_id": "agent_3",
+          "role": "inactive",
+          "actions": [],
+          "notes": null,
+          "policy": "rule",
+          "trace": null
+        },
+        {
+          "step": 0,
+          "agent_id": "agent_4",
+          "role": "inactive",
+          "actions": [],
+          "notes": null,
+          "policy": "rule",
+          "trace": null
+        }
+      ],
+      "feedback": {
+        "step": 0,
+        "outcomes": [
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "1215",
+              "rating": 4.0,
+              "reason": "Profiler anchors the target as a known positive while probing acceptance."
+            },
+            "accepted": true,
+            "effective_rating": 4.0,
+            "discount_applied": false,
+            "discount_value": 0.0,
+            "trust_delta": 0.35,
+            "risk_delta": 0.02,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "1221",
+              "rating": 3.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            "accepted": true,
+            "effective_rating": 3.0,
+            "discount_applied": false,
+            "discount_value": 0.0,
+            "trust_delta": 0.1,
+            "risk_delta": 0.12000000000000001,
+            "reason": "Accepted"
+          },
+          {
+            "action": {
+              "agent_id": "agent_1",
+              "item_id": "58559",
+              "rating": 3.0,
+              "reason": "Profiler probes whether ratings are accepted by the RS."
+            },
+            "accepted": true,
+            "effective_rating": 3.0,
+            "discount_applied": false,
+            "discount_value": 0.0,
+            "trust_delta": 0.1,
+            "risk_delta": 0.12000000000000001,
+            "reason": "Accepted"
+          }
+        ],
+        "alerts_by_agent": {},
+        "target_rank": 1,
+        "total_candidates": 978,
+        "defense_report": {
+          "step": 0,
+          "internal_detection_active": false,
+          "hidden_lockdown_active": false,
+          "internal_detection_by_agent": {},
+          "public_signals_by_agent": {
+            "agent_1": {
+              "agent_id": "agent_1",
+              "attempted_actions": 3,
+              "accepted_actions": 3,
+              "dropped_actions": 0,
+              "discounted_actions": 0,
+              "acceptance_rate": 1.0,
+              "discount_rate": 0.0,
+              "mean_discount": 0.0,
+              "suppression_streak": 0,
+              "suspected_filtering_score": 0.0,
+              "group_overlap": 0.0,
+              "group_suspicion": 0.0,
+              "notes": "no visible suppression"
+            },
+            "agent_2": {
+              "agent_id": "agent_2",
+              "attempted_actions": 0,
+              "accepted_actions": 0,
+              "dropped_actions": 0,
+              "discounted_actions": 0,
+              "acceptance_rate": 1.0,
+              "discount_rate": 0.0,
+              "mean_discount": 0.0,
+              "suppression_streak": 0,
+              "suspected_filtering_score": 0.0,
+              "group_overlap": 0.0,
+              "group_suspicion": 0.0,
+              "notes": "no visible suppression"
+            },
+            "agent_3": {
+              "agent_id": "agent_3",
+              "attempted_actions": 0,
+              "accepted_actions": 0,
+              "dropped_actions": 0,
+              "discounted_actions": 0,
+              "acceptance_rate": 1.0,
+              "discount_rate": 0.0,
+              "mean_discount": 0.0,
+              "suppression_streak": 0,
+              "suspected_filtering_score": 0.0,
+              "group_overlap": 0.0,
+              "group_suspicion": 0.0,
+              "notes": "no visible suppression"
+            },
+            "agent_4": {
+              "agent_id": "agent_4",
+              "attempted_actions": 0,
+              "accepted_actions": 0,
+              "dropped_actions": 0,
+              "discounted_actions": 0,
+              "acceptance_rate": 1.0,
+              "discount_rate": 0.0,
+              "mean_discount": 0.0,
+              "suppression_streak": 0,
+              "suspected_filtering_score": 0.0,
+              "group_overlap": 0.0,
+              "group_suspicion": 0.0,
+              "notes": "no visible suppression"
+            }
+          },
+          "target_rank_before": 82,
+          "target_rank_after": 1,
+          "target_rank_delta": 81,
+          "notes": "no hidden defense trigger"
+        },
+        "notes": "Normal filtering"
+      },
+      "coordinator_trace": null,
+      "coordinator_runtime_trace": {
+        "sniper_lockouts": {},
+        "profiler_forced": true
+      },
+      "state_before": {
+        "agent_1": {
+          "trust": 0.0,
+          "risk": 0.0,
+          "actions_taken": 0,
+          "current_role": "inactive",
+          "role_history": []
+        },
+        "agent_2": {
+          "trust": 0.0,
+          "risk": 0.0,
+          "actions_taken": 0,
+          "current_role": "inactive",
+          "role_history": []
+        },
+        "agent_3": {
+          "trust": 0.0,
+          "risk": 0.0,
+          "actions_taken": 0,
+          "current_role": "inactive",
+          "role_history": []
+        },
+        "agent_4": {
+          "trust": 0.0,
+          "risk": 0.0,
+          "actions_taken": 0,
+          "current_role": "inactive",
+          "role_history": []
+        }
+      },
+      "state_after": {
+        "agent_1": {
+          "trust": 0.5499999999999999,
+          "risk": 0.26,
+          "actions_taken": 3,
+          "current_role": "profiler",
+          "role_history": [
+            "profiler"
+          ]
+        },
+        "agent_2": {
+          "trust": 0.0,
+          "risk": 0.0,
+          "actions_taken": 0,
+          "current_role": "inactive",
+          "role_history": [
+            "inactive"
+          ]
+        },
+        "agent_3": {
+          "trust": 0.0,
+          "risk": 0.0,
+          "actions_taken": 0,
+          "current_role": "inactive",
+          "role_history": [
+            "inactive"
+          ]
+        },
+        "agent_4": {
+          "trust": 0.0,
+          "risk": 0.0,
+          "actions_taken": 0,
+          "current_role": "inactive",
+          "role_history": [
+            "inactive"
+          ]
+        }
+      }
+    }
+  ],
+  "attack_interactions_stats": {
+    "attempted_outcomes": 3,
+    "accepted_outcomes": 3,
+    "accepted_positive_by_threshold": 1,
+    "accepted_nonpositive_by_threshold": 2,
+    "accepted_discounted": 0,
+    "positive_threshold": 4.0
+  }
+}

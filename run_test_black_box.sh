@@ -3,13 +3,13 @@ set -euo pipefail
 
 : "${OPENAI_API_KEY:?OPENAI_API_KEY is required}"
 
-## Online attack
+# Online attack
 # PYTHONPATH=src python -m agas.cli run-episode \
 #   --processed-root processed \
 #   --dataset ml-latest-small \
 #   --max-interactions 10000 \
 #   --n-factors 24 \
-#   --target-item-id 200 \
+#   --target-item-id 1215 \
 #   --goal-rank 3 \
 #   --num-steps 20 \
 #   --num-agents 4 \
@@ -21,16 +21,40 @@ set -euo pipefail
 #   --stop-on-goal \
 #   --output outputs/episode_result_blackbox.json
 
-## Offline attack
-PYTHONPATH=src python -m agas.cli run-transfer \
+# ## Offline attack
+# PYTHONPATH=src python -m agas.cli run-transfer \
+#   --processed-root processed \
+#   --dataset ml-latest-small \
+#   --max-interactions 10000 \
+#   --n-factors 24 \
+#   --target-item-id 1215  \
+#   --target-keyword horror \
+#   --goal-rank 3 \
+#   --num-steps 100 \
+#   --num-agents 4 \
+#   --transfer-mode option-a \
+#   --target-models neumf,lightgcn \
+#   --target-epochs 3 \
+#   --target-batch-size 2048 \
+#   --coordinator-policy openai \
+#   --worker-policy openai \
+#   --llm-model gpt-5-mini \
+#   --openai-api-key "${OPENAI_API_KEY}" \
+#   --prompt-root prompts \
+#   --stop-on-goal \
+#   --target-implicit-only \
+#   --output outputs/transfer_top50_implicit.json \
+#   --transfer-candidate-set all_items
+
+  PYTHONPATH=src python -m agas.cli run-transfer \
   --processed-root processed \
   --dataset ml-latest-small \
   --max-interactions 10000 \
   --n-factors 24 \
-  --target-item-id 200 \
+  --target-item-id 1215  \
   --target-keyword horror \
   --goal-rank 3 \
-  --num-steps 20 \
+  --num-steps 100 \
   --num-agents 4 \
   --transfer-mode option-a \
   --target-models neumf,lightgcn \
@@ -42,4 +66,5 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --openai-api-key "${OPENAI_API_KEY}" \
   --prompt-root prompts \
   --stop-on-goal \
-  --output outputs/transfer_result_offline.json
+  --no-target-implicit-only \
+  --output outputs/transfer_top50_no_implicit.json

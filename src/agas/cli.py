@@ -19,7 +19,7 @@ from agas.agents.coordinator import (
 )
 from agas.agents.messages import AgentRole
 from agas.llm.prompt_store import PromptStore
-from agas.agents.worker import build_worker_pool
+from agas.agents.worker import WorkerPolicyConfig, build_worker_pool
 from agas.data.pipeline import PreprocessConfig, preprocess_all
 from agas.llm.providers import build_llm_client
 from agas.recsys.surrogate import LightweightSurrogateRecommender, SurrogateConfig
@@ -45,6 +45,28 @@ def _parse_optional_int(raw: str | None) -> Optional[int]:
     if value in {"none", "null", "all", "full"}:
         return None
     return int(value)
+
+
+def _load_processed_tables(
+    processed_root: Path,
+    dataset: str,
+    max_interactions: Optional[int] = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Load canonical interactions/items CSVs and normalize core types."""
+
+    interactions_path = processed_root / dataset / "interactions.csv"
+    items_path = processed_root / dataset / "items.csv"
+    if not interactions_path.exists() or not items_path.exists():
+        raise FileNotFoundError(f"Missing preprocessed files for dataset '{dataset}'. Run preprocess first.")
+
+    interactions = _read_limited_csv(interactions_path, max_rows=max_interactions)
+    items = pd.read_csv(items_path)
+
+    interactions["user_id"] = interactions["user_id"].astype(str)
+    interactions["item_id"] = interactions["item_id"].astype(str)
+    interactions["rating"] = pd.to_numeric(interactions["rating"], errors="coerce")
+    interactions = interactions.dropna(subset=["user_id", "item_id", "rating"])
+    return interactions, items
 
 
 def _read_limited_csv(path: Path, max_rows: Optional[int] = None, chunksize: int = 200_000) -> pd.DataFrame:
@@ -93,20 +115,7 @@ def _fit_surrogate_from_processed(
         Tuple ``(model, interactions, items)`` after fitting.
     """
 
-    interactions_path = processed_root / dataset / "interactions.csv"
-    items_path = processed_root / dataset / "items.csv"
-    if not interactions_path.exists() or not items_path.exists():
-        raise FileNotFoundError(
-            f"Missing preprocessed files for dataset '{dataset}'. Run preprocess first."
-        )
-
-    interactions = _read_limited_csv(interactions_path, max_rows=max_interactions)
-    items = pd.read_csv(items_path)
-
-    interactions["user_id"] = interactions["user_id"].astype(str)
-    interactions["item_id"] = interactions["item_id"].astype(str)
-    interactions["rating"] = pd.to_numeric(interactions["rating"], errors="coerce")
-    interactions = interactions.dropna(subset=["user_id", "item_id", "rating"])
+    interactions, items = _load_processed_tables(processed_root, dataset, max_interactions=max_interactions)
 
     model = LightweightSurrogateRecommender(config=SurrogateConfig(n_factors=n_factors))
     model.set_items(items)
@@ -133,7 +142,10 @@ def _build_coordinator_and_workers(
     """
 
     if args.coordinator_policy == "rule":
-        policy = RuleBasedCoordinatorPolicy(agent_order=agent_ids)
+        policy = RuleBasedCoordinatorPolicy(
+            agent_order=agent_ids,
+            max_snipers=int(getattr(args, "rule_max_snipers", 1)),
+        )
     else:
         if args.coordinator_policy == "openai":
             api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
@@ -181,8 +193,15 @@ def _build_coordinator_and_workers(
             worker_llm_client = build_llm_client(provider="openai", model=worker_model, api_key=api_key)
         else:
             worker_llm_client = build_llm_client(provider="ollama", model=worker_model, host=args.ollama_host)
+    worker_policy_config = None
+    if bool(getattr(args, "implicit_safe_attack", False)):
+        worker_policy_config = WorkerPolicyConfig(
+            implicit_safe=True,
+            positive_threshold=float(getattr(args, "target_positive_threshold", 4.0)),
+        )
     workers = build_worker_pool(
         agent_ids,
+        policy_config=worker_policy_config,
         llm_client=worker_llm_client,
         prompt_store=prompt_store,
         policy_name=worker_policy_name,
@@ -220,6 +239,7 @@ def _build_target_config(args: argparse.Namespace) -> TargetModelConfig:
         weight_decay=args.target_weight_decay,
         num_negatives=args.target_num_negatives,
         positive_threshold=args.target_positive_threshold,
+        implicit_only=args.target_implicit_only,
         seed=args.seed,
         device=args.target_device,
         lightgcn_layers=args.target_lightgcn_layers,
@@ -234,6 +254,28 @@ def _build_target_model(name: str, config: TargetModelConfig):
     if name == "lightgcn":
         return LightGCNRecommender(config=config)
     raise ValueError(f"Unsupported target model: {name}")
+
+
+def _build_episode_recommender(
+    name: str,
+    interactions: pd.DataFrame,
+    items: pd.DataFrame,
+    *,
+    n_factors: int,
+    target_config: TargetModelConfig,
+):
+    """Fit the recommender used during the episode loop for transfer runs."""
+
+    episode_name = str(name).strip().lower()
+    if episode_name == "surrogate":
+        model = LightweightSurrogateRecommender(config=SurrogateConfig(n_factors=n_factors))
+        model.set_items(items)
+        model.fit(interactions)
+        return model
+
+    model = _build_target_model(episode_name, target_config)
+    model.fit(interactions, items=items)
+    return model
 
 
 def _extract_attack_interactions(history: list[dict]) -> pd.DataFrame:
@@ -266,6 +308,64 @@ def _extract_attack_interactions(history: list[dict]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame(columns=["user_id", "item_id", "rating"])
     return pd.DataFrame(rows)
+
+
+def _attack_outcome_stats(history: list[dict], positive_threshold: float) -> dict:
+    """Compute basic stats over action outcomes in an episode history.
+
+    This is used for transfer evaluation reports to distinguish:
+    - attempted actions (including dropped by defenses),
+    - accepted actions,
+    - and how many accepted actions are "positive" under the target-model threshold.
+
+    Args:
+        history: Per-step episode timeline as returned by ``AGASEpisodeRunner``.
+        positive_threshold: Threshold used to define a positive interaction in implicit-feedback target models.
+
+    Returns:
+        Dictionary with attempted/accepted counts and a coarse breakdown of accepted effective ratings.
+    """
+
+    attempted = 0
+    accepted = 0
+    accepted_positive = 0
+    accepted_nonpositive = 0
+    accepted_discounted = 0
+
+    thr = float(positive_threshold)
+    for entry in history:
+        feedback = entry.get("feedback") or {}
+        for outcome in feedback.get("outcomes", []):
+            attempted += 1
+            if not outcome.get("accepted"):
+                continue
+            accepted += 1
+            eff = outcome.get("effective_rating")
+            if eff is None:
+                continue
+            eff_f = float(eff)
+            if eff_f >= thr:
+                accepted_positive += 1
+            else:
+                accepted_nonpositive += 1
+            # "Discounted" means accepted but changed in magnitude by the defense.
+            action = outcome.get("action") or {}
+            raw = action.get("rating")
+            if raw is not None:
+                try:
+                    if abs(float(raw) - eff_f) > 1e-6:
+                        accepted_discounted += 1
+                except (TypeError, ValueError):
+                    pass
+
+    return {
+        "attempted_outcomes": int(attempted),
+        "accepted_outcomes": int(accepted),
+        "accepted_positive_by_threshold": int(accepted_positive),
+        "accepted_nonpositive_by_threshold": int(accepted_nonpositive),
+        "accepted_discounted": int(accepted_discounted),
+        "positive_threshold": float(thr),
+    }
 
 
 def _summarize_goal_status(initial_rank: int, history: list[dict], goal_rank: int) -> dict:
@@ -519,15 +619,34 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
     target_models = _parse_target_models(args.target_models)
     target_config = _build_target_config(args)
 
-    surrogate_model, interactions, items = _fit_surrogate_from_processed(
+    interactions, items = _load_processed_tables(
         processed_root=Path(args.processed_root),
         dataset=args.dataset,
         max_interactions=_parse_optional_int(args.max_interactions),
-        n_factors=args.n_factors,
     )
 
+    episode_model = "surrogate"
+    if mode in {"both", "option-a"}:
+        episode_model = str(getattr(args, "episode_model", "surrogate")).strip().lower()
+    episode_recommender = _build_episode_recommender(
+        episode_model,
+        interactions,
+        items,
+        n_factors=args.n_factors,
+        target_config=target_config,
+    )
+    # Many evaluation protocols assume a fixed item catalog. If the target item is not in the
+    # clean catalog, "promotion" deltas are dominated by catalog inclusion (cold-start) artifacts.
+    catalog_item_ids = set(items["item_id"].astype(str).drop_duplicates().tolist()) if items is not None else set()
+    if not args.allow_cold_start_target and target_item_id not in catalog_item_ids:
+        raise RuntimeError(
+            f"Target item {target_item_id} is not present in processed items.csv for dataset={args.dataset}. "
+            "Pick a target that exists in the clean catalog, or pass --allow-cold-start-target to proceed "
+            "(treating this as a cold-start/inclusion setting rather than pure rank promotion)."
+        )
+
     base_env = AGASEnvironment(
-        recommender=surrogate_model,
+        recommender=episode_recommender,
         base_interactions=interactions,
         items=items,
         target_item_id=target_item_id,
@@ -547,7 +666,12 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         ),
         seed=args.seed,
     )
-    candidate_items = list(base_env.target_cluster_item_ids)
+    # Candidate set affects the absolute rank a lot. For reproducible offline transfer reporting
+    # we support freezing it rather than inheriting the surrogate's cluster (which can drift).
+    if args.transfer_candidate_set == "all_items":
+        candidate_items = items["item_id"].astype(str).drop_duplicates().tolist()
+    else:
+        candidate_items = list(base_env.target_cluster_item_ids)
     if target_item_id not in candidate_items:
         candidate_items.append(target_item_id)
     segment_user_ids = base_env.segment_user_ids
@@ -557,6 +681,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
 
     surrogate_result = None
     attack_rows = pd.DataFrame(columns=["user_id", "item_id", "rating"])
+    attack_stats = None
     if mode in {"both", "option-a"}:
         coordinator, workers = _build_coordinator_and_workers(
             args=args,
@@ -579,6 +704,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         )
         surrogate_result = runner.run()
         attack_rows = _extract_attack_interactions(surrogate_result.history)
+        attack_stats = _attack_outcome_stats(surrogate_result.history, positive_threshold=target_config.positive_threshold)
 
     option_a_results: dict[str, dict] = {}
     if mode in {"both", "option-a"}:
@@ -671,6 +797,13 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
 
     output = {
         "dataset": args.dataset,
+        "processed_root": str(Path(args.processed_root)),
+        "max_interactions": str(args.max_interactions),
+        "n_factors": int(args.n_factors),
+        "seed": int(args.seed),
+        "episode_model": str(episode_model),
+        "implicit_safe_attack": bool(getattr(args, "implicit_safe_attack", False)),
+        "rule_max_snipers": int(getattr(args, "rule_max_snipers", 1)),
         "target_item_id": target_item_id,
         "target_keyword": args.target_keyword,
         "num_steps": args.num_steps,
@@ -679,9 +812,22 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "worker_policy": args.worker_policy,
         "transfer_mode": mode,
         "target_models": target_models,
+        "transfer_candidate_set": str(args.transfer_candidate_set),
+        "transfer_candidate_set_size": int(len(candidate_items)),
+        "target_embedding_dim": int(target_config.embedding_dim),
+        "target_epochs": int(target_config.epochs),
+        "target_batch_size": int(target_config.batch_size),
+        "target_lr": float(target_config.lr),
+        "target_weight_decay": float(target_config.weight_decay),
+        "target_num_negatives": int(target_config.num_negatives),
+        "target_positive_threshold": float(target_config.positive_threshold),
+        "target_implicit_only": bool(target_config.implicit_only),
+        "target_device": str(target_config.device),
+        "target_lightgcn_layers": int(target_config.lightgcn_layers),
         "option_a": option_a_results if option_a_results else None,
         "option_b": option_b_results if option_b_results else None,
         "surrogate_episode_history": surrogate_result.history if surrogate_result is not None else None,
+        "attack_interactions_stats": attack_stats,
     }
 
     out_path = Path(args.output)
@@ -807,6 +953,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="inactive",
         help="Role to assign when a sniper is locked after suppression.",
     )
+    p_run.add_argument(
+        "--rule-max-snipers",
+        type=int,
+        default=1,
+        help="For rule-based coordinator: maximum number of snipers to assign per step when target rank is still > 5.",
+    )
     p_run.add_argument("--group-overlap-threshold", type=float, default=0.6)
     p_run.add_argument("--group-target-required", action=argparse.BooleanOptionalAction, default=True)
     p_run.add_argument("--group-weight", type=float, default=0.2)
@@ -895,6 +1047,47 @@ def build_parser() -> argparse.ArgumentParser:
     p_transfer.add_argument("--group-weight", type=float, default=0.2)
 
     p_transfer.add_argument("--transfer-mode", choices=["both", "option-a", "option-b"], default="both")
+    p_transfer.add_argument(
+        "--implicit-safe-attack",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "When enabled, the episode-loop workers avoid emitting ratings >= --target-positive-threshold "
+            "for profiler/camouflaguer roles (to avoid creating unintended implicit positives during offline transfer). "
+            "Sniper keeps pushing the target with 5.0 and skips competitor downrating for implicit-only training."
+        ),
+    )
+    p_transfer.add_argument(
+        "--episode-model",
+        choices=["surrogate", "lightgcn", "neumf"],
+        default="surrogate",
+        help=(
+            "Recommender used during the episode loop that generates attack interactions for Option A. "
+            "Default 'surrogate' uses the lightweight SVD-based surrogate. "
+            "Set to 'lightgcn' or 'neumf' to run the episode loop on that target-model family, then "
+            "still evaluate offline transfer to --target-models afterward."
+        ),
+    )
+    p_transfer.add_argument(
+        "--transfer-candidate-set",
+        choices=["cluster", "all_items"],
+        default="cluster",
+        help=(
+            "Candidate set used when reporting ranks in transfer evaluation. "
+            "'cluster' uses the surrogate-derived target cluster (can drift between runs). "
+            "'all_items' uses all item IDs from processed items.csv (more stable)."
+        ),
+    )
+    p_transfer.add_argument(
+        "--allow-cold-start-target",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Allow transfer evaluation when the target item is not present in the clean item catalog. "
+            "This turns the experiment into a cold-start/catalog-inclusion setting where rank deltas "
+            "are not directly comparable to 'promote an existing item' scenarios."
+        ),
+    )
     p_transfer.add_argument("--target-models", default="neumf,lightgcn")
     p_transfer.add_argument("--target-embedding-dim", type=int, default=32)
     p_transfer.add_argument("--target-epochs", type=int, default=3)
@@ -903,6 +1096,22 @@ def build_parser() -> argparse.ArgumentParser:
     p_transfer.add_argument("--target-weight-decay", type=float, default=1e-5)
     p_transfer.add_argument("--target-num-negatives", type=int, default=4)
     p_transfer.add_argument("--target-positive-threshold", type=float, default=4.0)
+    p_transfer.add_argument(
+        "--target-implicit-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Train target models as implicit-feedback recommenders: only rows with rating >= "
+            "--target-positive-threshold are treated as observed (positive) interactions. "
+            "Disable (set --no-target-implicit-only) to train on all explicit ratings."
+        ),
+    )
+    p_transfer.add_argument(
+        "--rule-max-snipers",
+        type=int,
+        default=1,
+        help="For rule-based coordinator: maximum number of snipers to assign per step when target rank is still > 5.",
+    )
     p_transfer.add_argument("--target-device", default="cpu")
     p_transfer.add_argument("--target-lightgcn-layers", type=int, default=2)
     p_transfer.add_argument("--output", default="outputs/transfer_result.json")
