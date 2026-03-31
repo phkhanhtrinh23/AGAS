@@ -20,7 +20,11 @@ from agas.agents.coordinator import (
 from agas.agents.messages import AgentRole
 from agas.llm.prompt_store import PromptStore
 from agas.agents.worker import WorkerPolicyConfig, build_worker_pool
-from agas.data.pipeline import PreprocessConfig, preprocess_all
+try:
+    from agas.data.pipeline import PreprocessConfig, preprocess_all
+except ImportError:  # agas.data is optional (only needed for preprocess command)
+    PreprocessConfig = None  # type: ignore[assignment,misc]
+    preprocess_all = None  # type: ignore[assignment]
 from agas.llm.providers import build_llm_client
 from agas.recsys.surrogate import LightweightSurrogateRecommender, SurrogateConfig
 from agas.recsys.targets import LightGCNRecommender, NeuMFRecommender, TargetModelConfig
@@ -424,6 +428,10 @@ def cmd_preprocess(args: argparse.Namespace) -> int:
     Returns:
         Process exit code.
     """
+
+    if preprocess_all is None:
+        print("ERROR: agas.data module is not installed. Cannot run preprocess command.")
+        return 1
 
     include = None
     if args.datasets:
