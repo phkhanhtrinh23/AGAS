@@ -57,6 +57,10 @@ class WorkerPolicyConfig:
     # rates the target item last so the next-item prediction bias fires on the target.
     sequential_sniper: bool = False
     sequential_filler_actions: int = 3
+    # LightGCN interaction budget. "small" = few fake users (cold-start, need graph
+    # proximity building); "large" = many real users (established graph connections,
+    # lighter profiling/camouflage needed before snipers fire).
+    lightgcn_budget: str = "small"
 
 
 class WorkerAgent:
@@ -521,8 +525,11 @@ class WorkerAgent:
     def _default_prompt_text(self, role: AgentRole, assignment: RoleAssignment | None = None) -> tuple[str, str]:
         """Return fallback prompt templates for a worker role.
 
-        Sniper prompts are tailored to the victim model class carried in
-        ``assignment.metadata["victim_model_class"]`` when available.
+        All role prompts (profiler, camouflageur, sniper) are tailored to the
+        victim model class carried in ``assignment.metadata["victim_model_class"]``
+        when available.  For LightGCN the ``lightgcn_budget`` config field
+        (``"small"`` / ``"large"``) selects between fake-user and real-user
+        sub-strategies.
 
         Args:
             role: Assigned worker role.
@@ -536,23 +543,198 @@ class WorkerAgent:
         victim_class = str(
             ((assignment.metadata if assignment else None) or {}).get("victim_model_class", "unknown")
         ).lower()
+        budget = str(getattr(self.config, "lightgcn_budget", "small")).lower()
+        # Resolve LightGCN into budget-specific sub-key so prompt tables stay flat.
+        effective_class = f"lightgcn_{budget}" if victim_class == "lightgcn_style" else victim_class
 
-        _sniper_system_by_class = {
+        # ------------------------------------------------------------------
+        # PROFILER prompts
+        # ------------------------------------------------------------------
+        _profiler_system: Dict[str, str] = {
             "mf_style": (
-                "You are the Sniper attack agent in an AGAS simulation attacking an MF/NeuMF-style "
-                "recommender. Purity of signal is critical: rate the target item 5.0. Keep your profile "
-                "sparse — avoid unnecessary filler ratings that dilute the target signal. You may rate "
-                "1–2 strong competitors at 1.0 to suppress them. Return strictly valid JSON: "
+                "You are the Profiler attack agent in an AGAS simulation targeting an MF/NeuMF-style "
+                "recommender. CRITICAL: keep this user profile sparse. Your only goal is to verify "
+                "the system is accepting new ratings — do NOT build up interaction history. Rate 2–3 "
+                "popular benchmark items to probe acceptance. Every unnecessary interaction dilutes "
+                "the eventual target signal that the sniper will deliver. "
+                "Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+            ),
+            "lightgcn_small": (
+                "You are the Profiler attack agent in an AGAS simulation targeting a LightGCN-style "
+                "recommender (small fake-user budget). Establish graph proximity to the target: rate "
+                "items from the same cluster/genre as the target so this fake user becomes "
+                "structurally connected to the target neighborhood before the sniper phase. "
+                "Do NOT rate the target item itself — that inflates its degree. "
+                "Return strictly valid JSON: "
                 '{"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
             ),
-            "lightgcn_style": (
+            "lightgcn_large": (
+                "You are the Profiler attack agent in an AGAS simulation targeting a LightGCN-style "
+                "recommender (large budget — real users with established graph connections). "
+                "Profiling is lightweight here: verify system acceptance with 2–3 popular benchmark "
+                "items and move quickly to the sniper phase. Real users already have structural "
+                "connections so no extra graph-proximity building is needed. "
+                "Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+            ),
+            "sequential_style": (
+                "You are the Profiler attack agent in an AGAS simulation targeting a sequential "
+                "recommender (SASRec/GRU4Rec/BERT4Rec). Profiling has dual purpose: (1) verify "
+                "the system is accepting ratings, and (2) begin building this user's interaction "
+                "sequence. Rate 3 popular items in a coherent genre order — the sequence order "
+                "matters for next-item prediction. Do not rate the target item yet. "
+                "Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+            ),
+        }
+        _profiler_user: Dict[str, str] = {
+            "mf_style": (
+                "Select up to {{max_actions}} benchmark-item ratings to probe system acceptance.\n"
+                "Context:\n{{context_json}}\n"
+                "Minimise the number of actions — fewer background interactions means a cleaner "
+                "signal when the sniper delivers the 5.0 target rating."
+            ),
+            "lightgcn_small": (
+                "Select up to {{max_actions}} cluster-item ratings to establish graph proximity.\n"
+                "Context:\n{{context_json}}\n"
+                "Choose items from target_cluster_items only. Do NOT include the target item itself."
+            ),
+            "lightgcn_large": (
+                "Select up to {{max_actions}} benchmark-item ratings to verify system acceptance.\n"
+                "Context:\n{{context_json}}\n"
+                "Keep it light — these agents already have graph presence from real interactions."
+            ),
+            "sequential_style": (
+                "Select up to {{max_actions}} benchmark-item ratings in genre order.\n"
+                "Context:\n{{context_json}}\n"
+                "Choose items from the same genre. Sequence order matters for next-item prediction."
+            ),
+        }
+        _default_profiler_system = (
+            "You are the Profiler agent in an AGAS simulation. Choose benign ratings on benchmark "
+            "items to test whether the recommender is integrating new activity. You receive a rolling "
+            "summary of your own recent actions and outcomes; use it to reason about past success or "
+            "suppression. Return strictly valid "
+            'JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+        )
+        _default_profiler_user = (
+            "Select up to {{max_actions}} benchmark-item ratings.\n"
+            "Context:\n{{context_json}}\n"
+            "Only use the allowed candidate items from the context."
+        )
+
+        # ------------------------------------------------------------------
+        # CAMOUFLAGEUR prompts
+        # ------------------------------------------------------------------
+        _camouflageur_system: Dict[str, str] = {
+            "mf_style": (
+                "You are the Camouflageur attack agent in an AGAS simulation targeting an MF/NeuMF-style "
+                "recommender. Signal purity is paramount: camouflage is secondary. Choose at most 1–2 "
+                "items from the target's genre cluster to make the profile look coherent, but do NOT "
+                "over-interact. Too many filler ratings fragment the embedding gradient and reduce the "
+                "sniper's signal-to-noise ratio. "
+                "Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+            ),
+            "lightgcn_small": (
+                "You are the Camouflageur attack agent in an AGAS simulation targeting a LightGCN-style "
+                "recommender (small fake-user budget). Build graph diffusion pathways: rate 2–3 "
+                "cluster-neighbour items at 4.0–5.0 to create structural paths that lead toward the "
+                "target via graph propagation, making the fake user's neighborhood look legitimate "
+                "without inflating the target's degree. Do NOT rate the target itself. "
+                "Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":4.5,"reason":"..."}]}.'
+            ),
+            "lightgcn_large": (
+                "You are the Camouflageur attack agent in an AGAS simulation targeting a LightGCN-style "
+                "recommender (large budget — real users). Reinforce existing cluster-neighbor ratings "
+                "already in the graph. Rate 2–3 cluster items adjacent to the target to strengthen "
+                "diffusion pathways. Spread ratings across different neighbors for broad coverage "
+                "rather than concentrating on one item. Do NOT rate the target itself. "
+                "Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+            ),
+            "sequential_style": (
+                "You are the Camouflageur attack agent in an AGAS simulation targeting a sequential "
+                "recommender (SASRec/GRU4Rec/BERT4Rec). Your role is CRITICAL: you are extending "
+                "the interaction sequence the model uses to predict the next item. Rate 2–3 "
+                "genre-consistent items in a plausible order to grow this user's history. These "
+                "interactions prime the attention mechanism so that when the sniper rates the target "
+                "last, it receives the maximum recency weight. Do NOT rate the target here. "
+                "Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+            ),
+        }
+        _camouflageur_user: Dict[str, str] = {
+            "mf_style": (
+                "Select up to {{max_actions}} camouflage actions for an MF-style victim.\n"
+                "Context:\n{{context_json}}\n"
+                "Choose same-cluster items; keep the list as short as possible. "
+                "The sniper's 5.0 target rating must dominate this user's interaction history."
+            ),
+            "lightgcn_small": (
+                "Select up to {{max_actions}} camouflage actions for a LightGCN-style victim (small budget).\n"
+                "Context:\n{{context_json}}\n"
+                "Use target_cluster_items only. Do NOT include the target item. "
+                "Favour items that connect this user structurally to the target neighborhood."
+            ),
+            "lightgcn_large": (
+                "Select up to {{max_actions}} camouflage actions for a LightGCN-style victim (large budget).\n"
+                "Context:\n{{context_json}}\n"
+                "Use target_cluster_items. Spread ratings across different cluster items for broad coverage."
+            ),
+            "sequential_style": (
+                "Select up to {{max_actions}} camouflageur actions for a sequential-model victim.\n"
+                "Context:\n{{context_json}}\n"
+                "Choose genre-consistent items from target_cluster_items in a plausible watch order. "
+                "The target item must NOT appear here — save it for the sniper step."
+            ),
+        }
+        _default_camouflageur_system = (
+            "You are the Camouflageur agent in an AGAS simulation. Choose plausible ratings on target-"
+            "domain or benign noise items to gain trust and avoid anomaly detection. You receive a "
+            "rolling summary of your own recent actions and outcomes; use it to reason about past "
+            "success or suppression. Return strictly "
+            'valid JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
+        )
+        _default_camouflageur_user = (
+            "Select up to {{max_actions}} camouflage actions.\n"
+            "Context:\n{{context_json}}\n"
+            "Favor plausible ratings on the allowed candidate items."
+        )
+
+        # ------------------------------------------------------------------
+        # SNIPER prompts
+        # ------------------------------------------------------------------
+        _sniper_system: Dict[str, str] = {
+            "mf_style": (
+                "You are the Sniper attack agent in an AGAS simulation attacking an MF/NeuMF-style "
+                "recommender. Purity of signal wins: rate the target item 5.0 directly. Keep your "
+                "profile sparse — avoid unnecessary filler ratings that dilute the target signal. "
+                "Fake new user profiles are preferred because they guarantee a clean embedding slot "
+                "dominated by the 5.0 target rating. You may rate 1–2 strong competitors at 1.0 to "
+                "suppress them. Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
+            ),
+            "lightgcn_small": (
                 "You are the Sniper attack agent in an AGAS simulation attacking a LightGCN-style "
-                "recommender. CRITICAL: do NOT rate the target item directly — every fake edge you "
-                "add to the target inflates its degree and dilutes all its existing edges via "
-                "D^{-1/2} A D^{-1/2} normalisation, making the attack counterproductive. "
+                "recommender (small fake-user budget). CRITICAL: do NOT rate the target item directly "
+                "— every fake edge to the target inflates its degree and dilutes all existing edges "
+                "via D^{-1/2} A D^{-1/2} normalisation, making the attack counterproductive. "
                 "Instead: (1) rate 2–3 cluster-neighbour items at 5.0 so graph diffusion propagates "
                 "the signal to the target; (2) rate 1–2 competitor items at 5.0 to inflate their "
-                "degrees and weaken their edge weights, pushing them lower in the ranking. "
+                "degrees and weaken their edge weights. Keep total interactions per agent low (<=12). "
+                'Return strictly valid JSON: {"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
+            ),
+            "lightgcn_large": (
+                "You are the Sniper attack agent in an AGAS simulation attacking a LightGCN-style "
+                "recommender (large budget — real users with existing graph connections). CRITICAL: "
+                "do NOT rate the target item directly. Real users can reach the target through their "
+                "existing graph neighborhood, so: (1) rate cluster-neighbour items at 5.0 to "
+                "strengthen diffusion pathways; (2) rate competitor items at 5.0 to inflate their "
+                "degrees and weaken their edges. Coordinate to cover different cluster neighbors "
+                "rather than all rating the same items. "
                 'Return strictly valid JSON: {"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
             ),
             "sequential_style": (
@@ -562,19 +744,26 @@ class WorkerAgent:
                 "Strategy: (1) rate 3–4 genre-consistent filler items at 4.0–5.0 FIRST to build "
                 "a believable interaction history; (2) rate the target item 5.0 as your LAST "
                 "action — do NOT rate anything after the target. "
-                'Return strictly valid JSON: {"actions":[{"item_id":"...","rating":4.5,"reason":"..."}]}.'
+                'Return strictly valid JSON: {"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
             ),
         }
-        _sniper_user_by_class = {
+        _sniper_user: Dict[str, str] = {
             "mf_style": (
                 "Generate up to {{max_actions}} sniper actions for an MF-style victim.\n"
                 "Context:\n{{context_json}}\n"
-                "Rate the target item 5.0 first. Optionally add 1–2 competitor ratings at 1.0."
+                "Rate the target item 5.0 first. Optionally add 1–2 competitor ratings at 1.0. "
+                "Keep the action list short — signal purity matters more than volume."
             ),
-            "lightgcn_style": (
-                "Generate up to {{max_actions}} sniper actions for a LightGCN-style victim.\n"
+            "lightgcn_small": (
+                "Generate up to {{max_actions}} sniper actions for a LightGCN-style victim (small budget).\n"
                 "Context:\n{{context_json}}\n"
                 "Do NOT include the target item. Rate cluster-neighbour items and competitor items at 5.0."
+            ),
+            "lightgcn_large": (
+                "Generate up to {{max_actions}} sniper actions for a LightGCN-style victim (large budget).\n"
+                "Context:\n{{context_json}}\n"
+                "Do NOT include the target item. Rate cluster-neighbour and competitor items at 5.0. "
+                "Choose different neighbors from other agents to maximise graph coverage."
             ),
             "sequential_style": (
                 "Generate up to {{max_actions}} sniper actions for a sequential-model victim.\n"
@@ -583,15 +772,14 @@ class WorkerAgent:
                 "The target must be the final action in your list."
             ),
         }
-
-        default_sniper_system = (
+        _default_sniper_system = (
             "You are the Sniper attack agent in an AGAS simulation. Your goal is to promote the target "
             "item aggressively and, when appropriate, demote nearby competitors. Operate within the "
             "allowed candidate items and return concise reasons. You receive a rolling summary of your "
             "own recent actions and outcomes; use it to reason about past success or suppression. "
             'Return strictly valid JSON: {"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
         )
-        default_sniper_user = (
+        _default_sniper_user = (
             "Generate up to {{max_actions}} sniper actions.\n"
             "Context:\n{{context_json}}\n"
             "The target item should receive the strongest positive rating. If competitor items are used, "
@@ -599,21 +787,9 @@ class WorkerAgent:
         )
 
         system_by_role = {
-            AgentRole.PROFILER: (
-                "You are the Profiler agent in an AGAS simulation. Choose benign ratings on benchmark "
-                "items to test whether the recommender is integrating new activity. You receive a rolling "
-                "summary of your own recent actions and outcomes; use it to reason about past success or "
-                "suppression. Return strictly valid "
-                'JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
-            ),
-            AgentRole.CAMOUFLAGEUR: (
-                "You are the Camouflaguer agent in an AGAS simulation. Choose plausible ratings on target-"
-                "domain or benign noise items to gain trust and avoid anomaly detection. You receive a "
-                "rolling summary of your own recent actions and outcomes; use it to reason about past "
-                "success or suppression. Return strictly "
-                'valid JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
-            ),
-            AgentRole.SNIPER: _sniper_system_by_class.get(victim_class, default_sniper_system),
+            AgentRole.PROFILER: _profiler_system.get(effective_class, _default_profiler_system),
+            AgentRole.CAMOUFLAGEUR: _camouflageur_system.get(effective_class, _default_camouflageur_system),
+            AgentRole.SNIPER: _sniper_system.get(effective_class, _default_sniper_system),
             AgentRole.INACTIVE: (
                 "You are the Inactive agent in an AGAS simulation. "
                 'Return strictly valid JSON with an empty action list: {"actions":[]}.'
@@ -626,17 +802,9 @@ class WorkerAgent:
             ),
         }
         user_by_role = {
-            AgentRole.PROFILER: (
-                "Select up to {{max_actions}} benchmark-item ratings.\n"
-                "Context:\n{{context_json}}\n"
-                "Only use the allowed candidate items from the context."
-            ),
-            AgentRole.CAMOUFLAGEUR: (
-                "Select up to {{max_actions}} camouflage actions.\n"
-                "Context:\n{{context_json}}\n"
-                "Favor plausible ratings on the allowed candidate items."
-            ),
-            AgentRole.SNIPER: _sniper_user_by_class.get(victim_class, default_sniper_user),
+            AgentRole.PROFILER: _profiler_user.get(effective_class, _default_profiler_user),
+            AgentRole.CAMOUFLAGEUR: _camouflageur_user.get(effective_class, _default_camouflageur_user),
+            AgentRole.SNIPER: _sniper_user.get(effective_class, _default_sniper_user),
             AgentRole.INACTIVE: "No action is required.\nContext:\n{{context_json}}",
             AgentRole.DIAGNOSTIC: (
                 "Run the diagnostic probe described in the context.\n"
@@ -644,23 +812,43 @@ class WorkerAgent:
                 "Use the allowed candidate items only."
             ),
         }
-        sys_prompt = system_by_role.get(role, default_sniper_system)
+        sys_prompt = system_by_role.get(role, _default_sniper_system)
         usr_prompt = user_by_role.get(role, "Context:\n{{context_json}}")
         return sys_prompt, usr_prompt
 
-    def _candidate_context(self, role: AgentRole, ctx: WorkerContext) -> tuple[list[str], int]:
+    def _candidate_context(
+        self,
+        role: AgentRole,
+        ctx: WorkerContext,
+        assignment: RoleAssignment | None = None,
+    ) -> tuple[list[str], int]:
         """Return allowed item pool and maximum action count for the current role.
+
+        For LightGCN-small profiler the pool switches from benchmark items to
+        cluster items so the fake user can establish graph proximity before the
+        sniper phase.
 
         Args:
             role: Assigned worker role.
             ctx: Environment-provided candidate pools.
+            assignment: Optional role assignment carrying victim model metadata.
 
         Returns:
             Tuple ``(allowed_items, max_actions)``.
         """
 
+        victim_class = str(
+            ((assignment.metadata if assignment else None) or {}).get("victim_model_class", "unknown")
+        ).lower()
+        budget = str(getattr(self.config, "lightgcn_budget", "small")).lower()
+        effective_class = f"lightgcn_{budget}" if victim_class == "lightgcn_style" else victim_class
+
         if role == AgentRole.PROFILER:
-            focus = list(ctx.benchmark_items[:50])
+            if effective_class == "lightgcn_small":
+                # Build graph proximity: use cluster items (exclude target).
+                focus = [i for i in ctx.target_cluster_items[:50] if str(i) != str(ctx.target_item_id)]
+            else:
+                focus = list(ctx.benchmark_items[:50])
             if self.config.implicit_safe:
                 focus = [str(ctx.target_item_id)] + focus
             return list(dict.fromkeys(focus)), self.config.profiler_actions
@@ -758,7 +946,7 @@ class WorkerAgent:
         """
 
         role = assignment.role
-        allowed_items, max_actions = self._candidate_context(role, ctx)
+        allowed_items, max_actions = self._candidate_context(role, ctx, assignment)
         context = {
             "step": step,
             "agent_id": self.state.agent_id,

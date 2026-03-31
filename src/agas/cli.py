@@ -202,15 +202,14 @@ def _build_coordinator_and_workers(
             worker_llm_client = build_llm_client(provider="openai", model=worker_model, api_key=api_key)
         else:
             worker_llm_client = build_llm_client(provider="ollama", model=worker_model, host=args.ollama_host)
-    worker_policy_config = None
     _graph_sniper = bool(getattr(args, "graph_sniper", False))
-    if bool(getattr(args, "implicit_safe_attack", False)) or _graph_sniper:
-        worker_policy_config = WorkerPolicyConfig(
-            implicit_safe=bool(getattr(args, "implicit_safe_attack", False)),
-            positive_threshold=float(getattr(args, "target_positive_threshold", 4.0)),
-            graph_sniper=_graph_sniper,
-            graph_sniper_neighbor_actions=int(getattr(args, "graph_sniper_neighbor_actions", 3)),
-        )
+    worker_policy_config = WorkerPolicyConfig(
+        implicit_safe=bool(getattr(args, "implicit_safe_attack", False)),
+        positive_threshold=float(getattr(args, "target_positive_threshold", 4.0)),
+        graph_sniper=_graph_sniper,
+        graph_sniper_neighbor_actions=int(getattr(args, "graph_sniper_neighbor_actions", 3)),
+        lightgcn_budget=str(getattr(args, "lightgcn_budget", "small")).lower(),
+    )
     workers = build_worker_pool(
         agent_ids,
         policy_config=worker_policy_config,
@@ -863,6 +862,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "graph_sniper": bool(getattr(args, "graph_sniper", False)),
         "victim_model_hint": str(getattr(args, "victim_model_hint", "auto")),
         "probe_steps": int(getattr(args, "probe_steps", 2)),
+        "lightgcn_budget": str(getattr(args, "lightgcn_budget", "small")),
         "rule_max_snipers": int(getattr(args, "rule_max_snipers", 1)),
         "target_item_id": target_item_id,
         "target_keyword": args.target_keyword,
@@ -1159,6 +1159,18 @@ def build_parser() -> argparse.ArgumentParser:
             "--victim-model-hint auto is set. Step 0 tests direct target rating (MF vs LightGCN). "
             "Step 1 tests recency ordering (MF vs Sequential). Set to 0 to skip probing entirely "
             "and rely on --victim-model-hint. (default: 2)"
+        ),
+    )
+    p_transfer.add_argument(
+        "--lightgcn-budget",
+        choices=["small", "large"],
+        default="small",
+        help=(
+            "Interaction budget mode for LightGCN-style victims. "
+            "'small' (default) uses fake users (cold-start): profiler builds graph proximity by "
+            "rating cluster neighbours before snipers fire; camouflageur creates diffusion pathways. "
+            "'large' uses real users with established graph connections: profiling is lightweight, "
+            "snipers coordinate to cover different cluster neighbors for broad diffusion coverage."
         ),
     )
     p_transfer.add_argument(

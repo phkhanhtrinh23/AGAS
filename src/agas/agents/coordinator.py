@@ -52,6 +52,11 @@ _VICTIM_COORDINATOR_GUIDANCE: Dict[str, str] = {
     VictimModelClass.LIGHTGCN_STYLE.value: (
         "- NEVER assign sniper to rate the target directly.\n"
         "- Snipers should rate cluster-neighbour items at 5.0 and competitors at 5.0.\n"
+        "- Budget awareness: with a SMALL agent budget (few fake users), profiler and "
+        "camouflaguer must first build graph proximity to the target cluster before snipers "
+        "fire — each fake user needs structural connections or its sniper ratings have no "
+        "graph path to the target. With a LARGE budget (many real users), lighter profiling "
+        "is sufficient because real users already have established graph connections.\n"
         "- Camouflaguer is valuable here: cluster ratings build graph proximity without "
         "inflating the target's degree.\n"
         "- Keep total sniper interactions per agent low — graph diffusion accumulates slowly."
@@ -780,26 +785,33 @@ class Coordinator:
     def _annotate_victim_class(
         self, assignments: Dict[str, RoleAssignment]
     ) -> Dict[str, RoleAssignment]:
-        """Stamp victim_model_class into sniper assignment metadata so workers
-        can choose the correct sniper variant without knowing global state."""
+        """Stamp victim_model_class into every assignment's metadata.
+
+        All roles (profiler, camouflaguer, sniper, inactive) receive the
+        detected victim model class so that each worker can tailor its
+        prompt and action logic without needing global coordinator state.
+        DIAGNOSTIC assignments are left unchanged (they run before
+        classification is complete).
+        """
 
         if self.victim_model_class == VictimModelClass.UNKNOWN:
             return assignments
 
         annotated: Dict[str, RoleAssignment] = {}
         for aid, a in assignments.items():
-            if a.role == AgentRole.SNIPER:
-                meta = dict(a.metadata)
-                meta["victim_model_class"] = self.victim_model_class.value
-                annotated[aid] = RoleAssignment(
-                    step=a.step,
-                    agent_id=a.agent_id,
-                    role=a.role,
-                    rationale=a.rationale,
-                    metadata=meta,
-                )
-            else:
+            if a.role == AgentRole.DIAGNOSTIC:
+                # Probe assignments are issued before classification — skip.
                 annotated[aid] = a
+                continue
+            meta = dict(a.metadata)
+            meta["victim_model_class"] = self.victim_model_class.value
+            annotated[aid] = RoleAssignment(
+                step=a.step,
+                agent_id=a.agent_id,
+                role=a.role,
+                rationale=a.rationale,
+                metadata=meta,
+            )
         return annotated
 
     def assign_roles(
