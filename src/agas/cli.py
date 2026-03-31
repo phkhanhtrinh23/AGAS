@@ -247,6 +247,7 @@ def _build_target_config(args: argparse.Namespace) -> TargetModelConfig:
         num_negatives=args.target_num_negatives,
         positive_threshold=args.target_positive_threshold,
         implicit_only=args.target_implicit_only,
+        explicit_negative_threshold=float(getattr(args, "target_explicit_negative_threshold", 2.0)),
         seed=args.seed,
         device=args.target_device,
         lightgcn_layers=args.target_lightgcn_layers,
@@ -694,6 +695,11 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         candidate_items = list(base_env.target_cluster_item_ids)
     if target_item_id not in candidate_items:
         candidate_items.append(target_item_id)
+    if args.transfer_candidate_set == "all_items" and len(candidate_items) > 5000:
+        print(
+            f"NOTE: 'all_items' candidate set has {len(candidate_items)} items. "
+            "Absolute rank numbers will be large; compare using normalized_rank_delta in the output."
+        )
     segment_user_ids = base_env.segment_user_ids
 
     prompt_store = PromptStore(Path(args.prompt_root))
@@ -773,6 +779,9 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 "final_rank": int(final_rank),
                 "final_total_candidates": int(final_total),
                 "rank_delta": int(initial_rank) - int(final_rank),
+                "normalized_rank_before": round(initial_rank / initial_total, 4) if initial_total else None,
+                "normalized_rank_after": round(final_rank / final_total, 4) if final_total else None,
+                "normalized_rank_delta": round((initial_rank - final_rank) / initial_total, 4) if initial_total else None,
                 "attack_interactions": int(len(attack_rows)),
             }
 
@@ -1160,6 +1169,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_transfer.add_argument("--target-weight-decay", type=float, default=1e-5)
     p_transfer.add_argument("--target-num-negatives", type=int, default=4)
     p_transfer.add_argument("--target-positive-threshold", type=float, default=4.0)
+    p_transfer.add_argument(
+        "--target-explicit-negative-threshold",
+        type=float,
+        default=2.0,
+        help=(
+            "In implicit-only mode, interactions with rating <= this threshold are used as "
+            "explicit BPR negatives instead of randomly sampled ones. This gives competitor "
+            "downratings (rating=1.0 from sniper) real training signal. Set to 0 to disable."
+        ),
+    )
     p_transfer.add_argument(
         "--target-implicit-only",
         action=argparse.BooleanOptionalAction,

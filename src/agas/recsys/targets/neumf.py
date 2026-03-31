@@ -84,11 +84,15 @@ class NeuMFRecommender(BaseTargetRecommender):
                 for u_idx, pos_i in batch:
                     user_id = self.idx_to_user[int(u_idx)]
                     seen = user_items.get(user_id, set())
-                    for _ in range(self.config.num_negatives):
-                        j = self._rng.integers(0, num_items)
-                        while self.idx_to_item[int(j)] in seen:
+                    explicit_negs = self._explicit_neg_pairs.get(int(u_idx), [])
+                    for k in range(self.config.num_negatives):
+                        if k < len(explicit_negs):
+                            neg_items.append(int(explicit_negs[k % len(explicit_negs)]))
+                        else:
                             j = self._rng.integers(0, num_items)
-                        neg_items.append(j)
+                            while self.idx_to_item[int(j)] in seen:
+                                j = self._rng.integers(0, num_items)
+                            neg_items.append(j)
 
                 users_rep = np.repeat(users, self.config.num_negatives)
                 pos_users = np.concatenate([users, users_rep])
