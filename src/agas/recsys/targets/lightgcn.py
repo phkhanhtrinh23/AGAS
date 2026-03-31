@@ -81,10 +81,14 @@ class LightGCNRecommender(BaseTargetRecommender):
                 for u_idx, pos_i in batch:
                     user_id = self.idx_to_user[int(u_idx)]
                     seen = user_items.get(user_id, set())
-                    j = self._rng.integers(0, num_items)
-                    while self.idx_to_item[int(j)] in seen:
+                    explicit_negs = self._explicit_neg_pairs.get(int(u_idx), [])
+                    if explicit_negs:
+                        neg_items.append(int(explicit_negs[self._rng.integers(0, len(explicit_negs))]))
+                    else:
                         j = self._rng.integers(0, num_items)
-                    neg_items.append(j)
+                        while self.idx_to_item[int(j)] in seen:
+                            j = self._rng.integers(0, num_items)
+                        neg_items.append(j)
 
                 users_t = torch.tensor(users, device=device)
                 pos_t = torch.tensor(pos_items, device=device)
