@@ -94,6 +94,8 @@ set -euo pipefail
 # Reduce snipers per step to limit degree inflation on LightGCN
 
 PYTHONPATH=src python -m agas.cli run-transfer \
+  --probe-steps 2 \
+  --victim-model-hint lightgcn \
   --processed-root processed \
   --dataset ml-latest-small \
   --target-item-id 1215 \
@@ -101,10 +103,7 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --num-steps 20 \
   --goal-rank 3 \
   --num-agents 4 \
-  --transfer-attack-roles sniper \
   --coordinator-policy rule \
   --episode-model lightgcn \
   --transfer-candidate-set cluster \
-  --target-explicit-negative-threshold 2.0 \
-  --rule-max-snipers 1 \
-  --output outputs/transfer_rc_all.json
+  --output outputs/transfer_rc_adapted_strategy_lightgcn.json
