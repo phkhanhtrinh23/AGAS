@@ -88,4 +88,4 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --openai-api-key "${OPENAI_API_KEY}" \
   --transfer-candidate-set cluster \
   --episode-model lightgcn \
-  --output outputs/transfer_fixed_no_target_implicit_lightgcn.json
+  --output outputs/transfer_fixed_no_target_implicit_fix_all_RCs.json
