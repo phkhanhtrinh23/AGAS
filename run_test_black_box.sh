@@ -70,22 +70,41 @@ set -euo pipefail
   # --episode-model lightgcn \
   # --output outputs/transfer_top50_no_implicit_lightgcn.json
 
+# PYTHONPATH=src python -m agas.cli run-transfer \
+#   --processed-root processed \
+#   --max-interactions 5000 \
+#   --dataset ml-latest-small \
+#   --n-factors 24 \
+#   --target-item-id 1215 \
+#   --target-keyword horror \
+#   --num-steps 20 \
+#   --goal-rank 3 \
+#   --num-agents 4 \
+#   --transfer-attack-roles sniper \
+#   --coordinator-policy rule \
+#   --episode-model lightgcn \
+#   --llm-model gpt-5-mini \
+#   --openai-api-key "${OPENAI_API_KEY}" \
+#   --transfer-candidate-set cluster \
+#   --output outputs/transfer_fixed_target_implicit_fix_all_RCs_lightgcn_no_users_as_agents_no_worker_openai_cluster.json
+#   # --use-segment-users-as-agents \
+
+# Drop --no-target-implicit-only entirely (RC5 handles competitors properly)
+# Add --target-explicit-negative-threshold 2.0 so competitor 1.0 ratings become forced negatives
+# Reduce snipers per step to limit degree inflation on LightGCN
+
 PYTHONPATH=src python -m agas.cli run-transfer \
   --processed-root processed \
-  --max-interactions 5000 \
   --dataset ml-latest-small \
-  --n-factors 24 \
   --target-item-id 1215 \
   --target-keyword horror \
   --num-steps 20 \
   --goal-rank 3 \
   --num-agents 4 \
-  --use-segment-users-as-agents \
   --transfer-attack-roles sniper \
-  --no-target-implicit-only \
-  --worker-policy openai \
-  --llm-model gpt-5-mini \
-  --openai-api-key "${OPENAI_API_KEY}" \
-  --transfer-candidate-set cluster \
+  --coordinator-policy rule \
   --episode-model lightgcn \
-  --output outputs/transfer_fixed_no_target_implicit_fix_all_RCs.json
+  --transfer-candidate-set cluster \
+  --target-explicit-negative-threshold 2.0 \
+  --rule-max-snipers 1 \
+  --output outputs/transfer_rc_all.json
