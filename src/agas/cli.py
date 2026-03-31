@@ -20,7 +20,11 @@ from agas.agents.coordinator import (
 from agas.agents.messages import AgentRole
 from agas.llm.prompt_store import PromptStore
 from agas.agents.worker import WorkerPolicyConfig, build_worker_pool
-from agas.data.pipeline import PreprocessConfig, preprocess_all
+try:
+    from agas.data.pipeline import PreprocessConfig, preprocess_all
+except ImportError:  # agas.data is optional (only needed for preprocess command)
+    PreprocessConfig = None  # type: ignore[assignment,misc]
+    preprocess_all = None  # type: ignore[assignment]
 from agas.llm.providers import build_llm_client
 from agas.recsys.surrogate import LightweightSurrogateRecommender, SurrogateConfig
 from agas.recsys.targets import LightGCNRecommender, NeuMFRecommender, TargetModelConfig
@@ -194,10 +198,13 @@ def _build_coordinator_and_workers(
         else:
             worker_llm_client = build_llm_client(provider="ollama", model=worker_model, host=args.ollama_host)
     worker_policy_config = None
-    if bool(getattr(args, "implicit_safe_attack", False)):
+    _graph_sniper = bool(getattr(args, "graph_sniper", False))
+    if bool(getattr(args, "implicit_safe_attack", False)) or _graph_sniper:
         worker_policy_config = WorkerPolicyConfig(
-            implicit_safe=True,
+            implicit_safe=bool(getattr(args, "implicit_safe_attack", False)),
             positive_threshold=float(getattr(args, "target_positive_threshold", 4.0)),
+            graph_sniper=_graph_sniper,
+            graph_sniper_neighbor_actions=int(getattr(args, "graph_sniper_neighbor_actions", 3)),
         )
     workers = build_worker_pool(
         agent_ids,
@@ -423,6 +430,10 @@ def cmd_preprocess(args: argparse.Namespace) -> int:
     Returns:
         Process exit code.
     """
+
+    if preprocess_all is None:
+        print("ERROR: agas.data module is not installed. Cannot run preprocess command.")
+        return 1
 
     include = None
     if args.datasets:
@@ -835,6 +846,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "seed": int(args.seed),
         "episode_model": str(episode_model),
         "implicit_safe_attack": bool(getattr(args, "implicit_safe_attack", False)),
+        "graph_sniper": bool(getattr(args, "graph_sniper", False)),
         "rule_max_snipers": int(getattr(args, "rule_max_snipers", 1)),
         "target_item_id": target_item_id,
         "target_keyword": args.target_keyword,
@@ -1090,6 +1102,24 @@ def build_parser() -> argparse.ArgumentParser:
             "for profiler/camouflaguer roles (to avoid creating unintended implicit positives during offline transfer). "
             "Sniper keeps pushing the target with 5.0 and skips competitor downrating for implicit-only training."
         ),
+    )
+    p_transfer.add_argument(
+        "--graph-sniper",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Enable graph-aware sniper mode for degree-normalised models such as LightGCN. "
+            "Instead of rating the target item directly (which inflates its degree and dilutes "
+            "existing edges via D^{-1/2} A D^{-1/2}), snipers rate cluster-neighbour items at "
+            "5.0 (graph diffusion lifts the target) and competitors at 5.0 (inflates competitor "
+            "degrees, weakening their edges). The target item is never rated directly."
+        ),
+    )
+    p_transfer.add_argument(
+        "--graph-sniper-neighbor-actions",
+        type=int,
+        default=3,
+        help="Number of cluster-neighbour items each sniper rates in --graph-sniper mode (default: 3).",
     )
     p_transfer.add_argument(
         "--episode-model",

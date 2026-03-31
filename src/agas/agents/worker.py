@@ -44,6 +44,14 @@ class WorkerPolicyConfig:
     sniper_competitor_actions: int = 2
     implicit_safe: bool = False
     positive_threshold: float = 4.0
+    # Graph-sniper mode: designed for degree-normalized models (e.g. LightGCN).
+    # Instead of rating the target directly (which inflates its degree and dilutes
+    # all its existing edges), snipers rate cluster-neighbour items at 5.0 so that
+    # graph diffusion propagates the signal to the target without touching its degree.
+    # Competitors are rated at 5.0 (not 1.0) to inflate their degrees and reduce
+    # their edge weights, pushing them lower in the ranking.
+    graph_sniper: bool = False
+    graph_sniper_neighbor_actions: int = 3
 
 
 class WorkerAgent:
@@ -293,8 +301,13 @@ class WorkerAgent:
             ctx: Environment-provided item pools used by role policies.
 
         Returns:
-            A list of sniper payload actions with a 5.0 target push and 1.0 competitor hits.
+            A list of sniper payload actions. In standard mode: 5.0 for target +
+            1.0 for competitors. In graph_sniper mode: 5.0 for cluster neighbours
+            (not the target itself) + 5.0 for competitors to inflate their degrees.
         """
+
+        if self.config.graph_sniper:
+            return self._act_graph_sniper(ctx)
 
         out = [
             RatingAction(
@@ -317,6 +330,68 @@ class WorkerAgent:
                     reason="Sniper payload strongly suppresses close competitors.",
                 )
             )
+        return out
+
+    def _act_graph_sniper(self, ctx: WorkerContext) -> List[RatingAction]:
+        """Graph-aware sniper payload for degree-normalised models (e.g. LightGCN).
+
+        Standard snipers rate the target item at 5.0, but in LightGCN every new
+        edge added to the target increases its degree and dilutes the weight of ALL
+        its existing edges via D^{-1/2} A D^{-1/2} normalisation. This causes the
+        attack to hurt the target rather than help it.
+
+        This variant instead:
+        1. Rates cluster-neighbour items (same genre, NOT the target) at 5.0 so that
+           graph diffusion propagates the signal to the target without touching its
+           degree.
+        2. Rates competitors at 5.0 (not 1.0) to inflate their degrees, weakening
+           their existing edges and pushing them lower in the ranking relative to the
+           target.
+
+        Args:
+            ctx: Environment-provided item pools used by role policies.
+
+        Returns:
+            List of rating actions implementing the graph-aware sniper strategy.
+        """
+
+        out: List[RatingAction] = []
+
+        # Step 1: rate cluster neighbours at 5.0 (exclude the target itself)
+        neighbor_pool = [
+            i for i in ctx.target_cluster_items if str(i) != str(ctx.target_item_id)
+        ]
+        n_neighbors = int(self.config.graph_sniper_neighbor_actions)
+        for item_id in self._sample_items(neighbor_pool, n_neighbors):
+            out.append(
+                RatingAction(
+                    agent_id=self.state.agent_id,
+                    item_id=item_id,
+                    rating=5.0,
+                    reason=(
+                        "Graph-sniper: rating cluster neighbour at 5.0 so graph "
+                        "diffusion lifts the target without inflating its degree."
+                    ),
+                )
+            )
+
+        # Step 2: rate competitors at 5.0 to inflate their degrees (degree
+        # normalisation will then reduce the weight of their existing edges,
+        # pushing them lower in the ranking relative to the target).
+        competitor_actions = int(self.config.sniper_competitor_actions)
+        for item_id in self._sample_items(ctx.competitor_items, competitor_actions):
+            out.append(
+                RatingAction(
+                    agent_id=self.state.agent_id,
+                    item_id=item_id,
+                    rating=5.0,
+                    reason=(
+                        "Graph-sniper: rating competitor at 5.0 to inflate its degree "
+                        "and reduce the weight of its existing edges via normalisation."
+                    ),
+                )
+            )
+
         return out
 
     def _default_prompt_text(self, role: AgentRole) -> tuple[str, str]:
