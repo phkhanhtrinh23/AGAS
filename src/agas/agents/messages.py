@@ -14,6 +14,33 @@ class AgentRole(str, Enum):
     CAMOUFLAGEUR = "camouflaguer"
     SNIPER = "sniper"
     INACTIVE = "inactive"
+    DIAGNOSTIC = "diagnostic"  # probing step used for victim-model classification
+
+
+class VictimModelClass(str, Enum):
+    """Inferred architecture class of the victim recommender system.
+
+    Used by the coordinator to choose the optimal attack strategy and by workers
+    to select the right sniper variant.
+
+    UNKNOWN       – not yet classified (probe phase in progress or skipped).
+    MF_STYLE      – matrix-factorisation / MLP models (NeuMF, GMF, BPR-MF).
+                    Direct target rating gives a clean positive gradient → more
+                    is better.  Fake new users preferred.
+    LIGHTGCN_STYLE – degree-normalised graph models (LightGCN, NGCF, SimGCL).
+                    Direct target rating inflates the item's degree and dilutes ALL
+                    existing edges.  Must attack indirectly via cluster neighbours
+                    and competitor degree inflation.
+    SEQUENTIAL_STYLE – recency-sensitive sequence models (SASRec, GRU4Rec, BERT4Rec).
+                    The position of the target rating in the interaction sequence
+                    matters: rating the target *last* (after genre-consistent fillers)
+                    exploits the next-item prediction bias.
+    """
+
+    UNKNOWN = "unknown"
+    MF_STYLE = "mf_style"
+    LIGHTGCN_STYLE = "lightgcn_style"
+    SEQUENTIAL_STYLE = "sequential_style"
 
 
 @dataclass
@@ -92,6 +119,7 @@ class RoleAssignment:
     agent_id: str
     role: AgentRole
     rationale: str
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         """Serialize assignment while converting enum roles to wire-format strings.

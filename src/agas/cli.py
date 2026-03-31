@@ -185,7 +185,12 @@ def _build_coordinator_and_workers(
         sniper_lock_memory_events=args.sniper_lock_memory_events,
         sniper_lock_role=lock_role,
     )
-    coordinator = Coordinator(policy=policy, runtime_config=runtime_config)
+    coordinator = Coordinator(
+        policy=policy,
+        runtime_config=runtime_config,
+        probe_steps=int(getattr(args, "probe_steps", 2)),
+        victim_model_hint=str(getattr(args, "victim_model_hint", "auto")),
+    )
     worker_policy_name = args.worker_policy
     worker_llm_client = None
     if worker_policy_name != "rule":
@@ -198,10 +203,13 @@ def _build_coordinator_and_workers(
         else:
             worker_llm_client = build_llm_client(provider="ollama", model=worker_model, host=args.ollama_host)
     worker_policy_config = None
-    if bool(getattr(args, "implicit_safe_attack", False)):
+    _graph_sniper = bool(getattr(args, "graph_sniper", False))
+    if bool(getattr(args, "implicit_safe_attack", False)) or _graph_sniper:
         worker_policy_config = WorkerPolicyConfig(
-            implicit_safe=True,
+            implicit_safe=bool(getattr(args, "implicit_safe_attack", False)),
             positive_threshold=float(getattr(args, "target_positive_threshold", 4.0)),
+            graph_sniper=_graph_sniper,
+            graph_sniper_neighbor_actions=int(getattr(args, "graph_sniper_neighbor_actions", 3)),
         )
     workers = build_worker_pool(
         agent_ids,
@@ -852,6 +860,9 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "seed": int(args.seed),
         "episode_model": str(episode_model),
         "implicit_safe_attack": bool(getattr(args, "implicit_safe_attack", False)),
+        "graph_sniper": bool(getattr(args, "graph_sniper", False)),
+        "victim_model_hint": str(getattr(args, "victim_model_hint", "auto")),
+        "probe_steps": int(getattr(args, "probe_steps", 2)),
         "rule_max_snipers": int(getattr(args, "rule_max_snipers", 1)),
         "target_item_id": target_item_id,
         "target_keyword": args.target_keyword,
@@ -1106,6 +1117,48 @@ def build_parser() -> argparse.ArgumentParser:
             "When enabled, the episode-loop workers avoid emitting ratings >= --target-positive-threshold "
             "for profiler/camouflaguer roles (to avoid creating unintended implicit positives during offline transfer). "
             "Sniper keeps pushing the target with 5.0 and skips competitor downrating for implicit-only training."
+        ),
+    )
+    p_transfer.add_argument(
+        "--graph-sniper",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Enable graph-aware sniper mode for degree-normalised models such as LightGCN. "
+            "Instead of rating the target item directly (which inflates its degree and dilutes "
+            "existing edges via D^{-1/2} A D^{-1/2}), snipers rate cluster-neighbour items at "
+            "5.0 (graph diffusion lifts the target) and competitors at 5.0 (inflates competitor "
+            "degrees, weakening their edges). The target item is never rated directly."
+        ),
+    )
+    p_transfer.add_argument(
+        "--graph-sniper-neighbor-actions",
+        type=int,
+        default=3,
+        help="Number of cluster-neighbour items each sniper rates in --graph-sniper mode (default: 3).",
+    )
+    p_transfer.add_argument(
+        "--victim-model-hint",
+        choices=["auto", "mf", "lightgcn", "sequential"],
+        default="auto",
+        help=(
+            "Victim recommender architecture hint. 'auto' (default) runs a probe phase for "
+            "--probe-steps steps to classify the victim and then adapts the attack strategy. "
+            "'mf' forces MF/NeuMF-style strategy (direct 5.0 target rating, sparse fake profiles). "
+            "'lightgcn' forces graph-sniper strategy (no direct target rating; cluster-neighbour "
+            "and competitor degree inflation). "
+            "'sequential' forces sequential-sniper strategy (filler items first, target last)."
+        ),
+    )
+    p_transfer.add_argument(
+        "--probe-steps",
+        type=int,
+        default=2,
+        help=(
+            "Number of steps dedicated to probing the victim model architecture when "
+            "--victim-model-hint auto is set. Step 0 tests direct target rating (MF vs LightGCN). "
+            "Step 1 tests recency ordering (MF vs Sequential). Set to 0 to skip probing entirely "
+            "and rely on --victim-model-hint. (default: 2)"
         ),
     )
     p_transfer.add_argument(

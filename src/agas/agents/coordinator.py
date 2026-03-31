@@ -6,10 +6,64 @@ import json
 from dataclasses import dataclass
 from typing import Any, Dict, Protocol, Sequence
 
-from agas.agents.messages import AgentRole, CoordinatorObservation, RoleAssignment
+from agas.agents.messages import AgentRole, CoordinatorObservation, RoleAssignment, VictimModelClass
 from agas.agents.worker import WorkerState
 from agas.llm.prompt_store import PromptStore
 from agas.llm.providers import LLMClient, LLMRequest
+
+# Per-model-class strategy summaries injected into LLM coordinator prompts.
+_VICTIM_STRATEGY_HINTS: Dict[str, str] = {
+    VictimModelClass.UNKNOWN.value: (
+        "Model not yet classified. Use profiler/camouflaguer to build trust, then sniper."
+    ),
+    VictimModelClass.MF_STYLE.value: (
+        "MF/NeuMF-style victim. Purity of signal wins. Deploy snipers early and often with "
+        "direct 5.0 target ratings. Keep fake-user profiles sparse — fewer filler interactions "
+        "means the 5.0 target rating dominates the gradient. Fake new users are preferred over "
+        "reusing existing real users."
+    ),
+    VictimModelClass.LIGHTGCN_STYLE.value: (
+        "LightGCN-style victim (degree-normalised graph). NEVER rate the target item directly — "
+        "each new edge inflates the target's degree and dilutes all its existing edges. Instead: "
+        "(1) rate cluster-neighbour items at 5.0 so graph diffusion propagates the signal to the "
+        "target; (2) rate competitor items at 5.0 to inflate their degrees and weaken their edge "
+        "weights, pushing competitors down. Keep total sniper interactions low (<=12 per agent)."
+    ),
+    VictimModelClass.SEQUENTIAL_STYLE.value: (
+        "Sequential/recency-aware victim (SASRec, GRU4Rec, BERT4Rec). The MODEL predicts the "
+        "NEXT item based on recent interaction history — the last-rated item has the highest "
+        "weight. Strategy: each sniper should (1) first rate 3-4 genre-consistent filler items "
+        "at 4.0-5.0 to build a believable history, (2) rate the target item 5.0 as the LAST "
+        "action in every step. Do NOT rate anything after the target."
+    ),
+}
+
+_VICTIM_COORDINATOR_GUIDANCE: Dict[str, str] = {
+    VictimModelClass.UNKNOWN.value: (
+        "- Use standard profiler → camouflaguer → sniper progression.\n"
+        "- Sniper should rate the target item 5.0 directly."
+    ),
+    VictimModelClass.MF_STYLE.value: (
+        "- Deploy snipers as soon as trust is built (step 2+).\n"
+        "- Sniper rates the target 5.0 directly — more interactions = stronger signal.\n"
+        "- Minimise camouflaguer filler actions to keep fake profiles sparse.\n"
+        "- Prefer sniper over camouflaguer when risk is moderate."
+    ),
+    VictimModelClass.LIGHTGCN_STYLE.value: (
+        "- NEVER assign sniper to rate the target directly.\n"
+        "- Snipers should rate cluster-neighbour items at 5.0 and competitors at 5.0.\n"
+        "- Camouflaguer is valuable here: cluster ratings build graph proximity without "
+        "inflating the target's degree.\n"
+        "- Keep total sniper interactions per agent low — graph diffusion accumulates slowly."
+    ),
+    VictimModelClass.SEQUENTIAL_STYLE.value: (
+        "- Profiler and camouflaguer steps are critical: they build the fake user's interaction "
+        "history that makes the eventual target rating feel natural.\n"
+        "- Sniper must rate the target LAST in each step (after filler items).\n"
+        "- Maintain a steady profiler → camouflaguer cadence to extend history length.\n"
+        "- Assign sniper only after at least 2 prior steps of history-building per agent."
+    ),
+}
 
 
 class CoordinatorPolicy(Protocol):
@@ -180,6 +234,8 @@ class LLMCoordinatorPolicy:
     temperature: float = 0.2
     temperature_end: float | None = None
     total_steps: int | None = None
+    # Set by Coordinator after probe-phase classification so the LLM receives context.
+    victim_model_class: str = VictimModelClass.UNKNOWN.value
 
     def __post_init__(self) -> None:
         """Initialize coordinator prompt store and trace cache."""
@@ -219,27 +275,33 @@ class LLMCoordinatorPolicy:
         """
 
         prompt = self._build_prompt(observation, worker_states)
+        victim_class = str(self.victim_model_class)
+        _strategy_hint = _VICTIM_STRATEGY_HINTS.get(victim_class, _VICTIM_STRATEGY_HINTS["unknown"])
         bundle = self.prompt_store.load(
             key="coordinator",
             default_system=(
                 "You are the coordinator for an AGAS simulation operating under black-box feedback. "
                 "You do not see the defender's hidden alerts directly. You must infer filtering pressure "
                 "from acceptance rates, discounting, suppression streaks, trust/risk values, and target-rank "
-                "movement. Keep using profiler periodically as a scout instead of abandoning it after the "
-                "opening steps. Assign exactly one role to each agent. Return strictly valid JSON with agent "
-                "IDs as keys and values in: profiler, camouflaguer, sniper, inactive."
-            ),
+                "movement.\n\n"
+                "VICTIM MODEL CLASS: {victim_class}\n"
+                "STRATEGY: {strategy_hint}\n\n"
+                "Keep using profiler periodically as a scout instead of abandoning it after the opening "
+                "steps. Assign exactly one role to each agent. Return strictly valid JSON with agent IDs "
+                "as keys and values chosen from: profiler, camouflaguer, sniper, inactive."
+            ).format(victim_class=victim_class, strategy_hint=_strategy_hint),
             default_user=(
                 "Decide the next-step role for each agent using the black-box observation below.\n\n"
-                "Guidance:\n"
+                "Guidance (tailored for {victim_class} victim):\n"
+                "{guidance}\n\n"
+                "General rules:\n"
                 "- Prefer profiler when you need to probe whether the system is still accepting ratings.\n"
-                "- Keep at least one profiler active periodically during a long run so the group keeps "
-                "checking whether ratings are being integrated.\n"
                 "- Prefer camouflaguer when suppression or discounting is visible.\n"
-                "- Prefer inactive when an agent's suppression streak or suspicion is high.\n"
-                "- Prefer sniper only when the target still needs promotion and recent signals suggest the "
-                "agent can act with acceptable risk.\n\n"
-                "Observation:\n{{context_json}}"
+                "- Prefer inactive when an agent's suppression streak or suspicion is high.\n\n"
+                "Observation:\n{{{{context_json}}}}"
+            ).format(
+                victim_class=victim_class,
+                guidance=_VICTIM_COORDINATOR_GUIDANCE.get(victim_class, _VICTIM_COORDINATOR_GUIDANCE["unknown"]),
             ),
         )
         user_prompt = bundle.render_user({"context_json": prompt})
@@ -305,6 +367,8 @@ class LLMCoordinatorPolicy:
                 }
                 for aid in self.agent_order
             },
+            "victim_model_class": self.victim_model_class,
+            "victim_strategy": _VICTIM_STRATEGY_HINTS.get(self.victim_model_class, ""),
             "objective": "Promote target item while minimizing anomaly alerts and bans.",
         }
         return json.dumps(state_blob, indent=2)
@@ -328,7 +392,16 @@ class LLMCoordinatorPolicy:
 
         result: Dict[str, RoleAssignment] = {}
         for aid in self.agent_order:
-            role_str = str(data.get(aid, "inactive")).lower().strip()
+            entry = data.get(aid, "inactive")
+            if isinstance(entry, dict):
+                role_str = str(entry.get("role", "inactive")).lower().strip()
+                metadata = {k: v for k, v in entry.items() if k != "role"}
+            else:
+                role_str = str(entry).lower().strip()
+                metadata = {}
+            # LLM should not assign diagnostic — that is controlled by Coordinator probe phase.
+            if role_str == AgentRole.DIAGNOSTIC.value:
+                role_str = "inactive"
             try:
                 role = AgentRole(role_str)
             except ValueError:
@@ -338,6 +411,7 @@ class LLMCoordinatorPolicy:
                 agent_id=aid,
                 role=role,
                 rationale="LLM-coordinator assignment.",
+                metadata=metadata,
             )
         return result
 
@@ -345,13 +419,25 @@ class LLMCoordinatorPolicy:
 class Coordinator:
     """Coordinator orchestrating role assignments each step."""
 
-    def __init__(self, policy: CoordinatorPolicy, runtime_config: CoordinatorRuntimeConfig | None = None):
+    def __init__(
+        self,
+        policy: CoordinatorPolicy,
+        runtime_config: CoordinatorRuntimeConfig | None = None,
+        probe_steps: int = 2,
+        victim_model_hint: str = "auto",
+    ):
         """Store the selected assignment policy implementation.
 
         Args:
             policy: Coordinator strategy object that implements ``assign``.
             runtime_config: Optional coordinator-side runtime settings used to
                 enforce periodic profiler probes across all policies.
+            probe_steps: Number of steps dedicated to probing the victim model
+                architecture before switching to the exploit phase.  Set to 0
+                to skip probing entirely and use ``victim_model_hint`` directly.
+            victim_model_hint: One of ``"auto"``, ``"mf"``, ``"lightgcn"``,
+                ``"sequential"``.  ``"auto"`` runs the probe phase; any other
+                value skips probing and sets the class immediately.
         """
 
         self.policy = policy
@@ -359,6 +445,26 @@ class Coordinator:
         self._sniper_lockouts: Dict[str, int] = {}
         self._last_assignments: Dict[str, RoleAssignment] | None = None
         self.last_runtime_trace: Dict[str, Any] | None = None
+
+        # Victim-model detection state
+        _hint_map = {
+            "mf": VictimModelClass.MF_STYLE,
+            "lightgcn": VictimModelClass.LIGHTGCN_STYLE,
+            "sequential": VictimModelClass.SEQUENTIAL_STYLE,
+        }
+        hint_key = str(victim_model_hint).lower().strip()
+        if hint_key in _hint_map:
+            self.victim_model_class: VictimModelClass = _hint_map[hint_key]
+            self._probe_phase_done: bool = True
+        else:
+            self.victim_model_class = VictimModelClass.UNKNOWN
+            self._probe_phase_done = probe_steps <= 0
+
+        self._probe_steps: int = max(0, int(probe_steps))
+        # rank recorded just before each probe action fires, so we can measure delta
+        self._probe_rank_before: Dict[int, int] = {}  # probe_step_index -> rank
+        # list of {"type": "direct"|"sequential", "delta": int}
+        self._probe_results: list = []
 
     @staticmethod
     def _agent_signal(observation: CoordinatorObservation, agent_id: str) -> Dict[str, Any]:
@@ -566,12 +672,148 @@ class Coordinator:
         )
         return adjusted
 
+    def _make_inactive(self, step: int, agent_ids: Sequence[str]) -> Dict[str, RoleAssignment]:
+        """Return all-inactive assignment map for a set of agents."""
+        return {
+            aid: RoleAssignment(
+                step=step,
+                agent_id=aid,
+                role=AgentRole.INACTIVE,
+                rationale="Inactive during probe phase — only one agent acts to isolate rank signal.",
+            )
+            for aid in agent_ids
+        }
+
+    def _probe_assign(
+        self,
+        observation: CoordinatorObservation,
+        worker_states: Dict[str, WorkerState],
+    ) -> Dict[str, RoleAssignment] | None:
+        """Return probe-phase assignments, or None when probing is complete.
+
+        The probe phase uses at most ``_probe_steps`` steps.  Only one agent
+        acts per probe step so the resulting rank delta can be cleanly
+        attributed to the specific probe action:
+
+        Probe 0 (step 0):  one agent rates the target at 5.0 directly.
+                           Result read at step 1's observation.target_rank_delta.
+          * delta <= 0  → LightGCN-style (direct rating hurt / no effect) → done.
+          * delta > 0   → MF or Sequential → run probe 1.
+        Probe 1 (step 1):  one agent rates 3 genre fillers then target last.
+                           Result read at step 2's observation.target_rank_delta.
+          * sequential_delta > direct_delta * 1.3  → Sequential-style.
+          * else                                    → MF-style.
+
+        Returns None when the probe phase is done and normal assignment should proceed.
+        """
+
+        step = observation.step
+        agent_ids = sorted(worker_states.keys())
+        if not agent_ids:
+            return None
+
+        # ---- read results from previous probe step ----
+        if step == 1 and 0 in self._probe_rank_before:
+            direct_delta = self._probe_rank_before[0] - observation.target_rank
+            self._probe_results.append({"type": "direct", "delta": direct_delta})
+
+            if direct_delta <= 0:
+                # Direct rating hurt or had no effect → LightGCN-style.
+                self.victim_model_class = VictimModelClass.LIGHTGCN_STYLE
+                self._probe_phase_done = True
+                return None  # hand over to normal assign
+
+        if step == 2 and 1 in self._probe_rank_before and not self._probe_phase_done:
+            sequential_delta = self._probe_rank_before[1] - observation.target_rank
+            self._probe_results.append({"type": "sequential", "delta": sequential_delta})
+            direct_delta = next(
+                (r["delta"] for r in self._probe_results if r["type"] == "direct"), 0
+            )
+            # Sequential models show markedly better lift when target is rated last.
+            if sequential_delta > direct_delta * 1.3 and sequential_delta > 0:
+                self.victim_model_class = VictimModelClass.SEQUENTIAL_STYLE
+            else:
+                self.victim_model_class = VictimModelClass.MF_STYLE
+            self._probe_phase_done = True
+            return None
+
+        # ---- assign next probe action ----
+        if step == 0 and not self._probe_phase_done:
+            self._probe_rank_before[0] = observation.target_rank
+            assignments = self._make_inactive(step, agent_ids)
+            probe_agent = agent_ids[0]
+            assignments[probe_agent] = RoleAssignment(
+                step=step,
+                agent_id=probe_agent,
+                role=AgentRole.DIAGNOSTIC,
+                rationale=(
+                    "Probe 0: rating target directly at 5.0 to test whether a direct positive "
+                    "signal improves the rank (MF/Sequential) or hurts it (LightGCN)."
+                ),
+                metadata={"diagnostic_type": "direct"},
+            )
+            return assignments
+
+        if step == 1 and not self._probe_phase_done and self._probe_steps >= 2:
+            self._probe_rank_before[1] = observation.target_rank
+            assignments = self._make_inactive(step, agent_ids)
+            probe_agent = agent_ids[1] if len(agent_ids) > 1 else agent_ids[0]
+            assignments[probe_agent] = RoleAssignment(
+                step=step,
+                agent_id=probe_agent,
+                role=AgentRole.DIAGNOSTIC,
+                rationale=(
+                    "Probe 1: rating genre-consistent fillers first then target last to test "
+                    "whether recency ordering gives extra lift (Sequential) vs flat gain (MF)."
+                ),
+                metadata={"diagnostic_type": "sequential"},
+            )
+            return assignments
+
+        # Probe steps exhausted without classification — default to MF.
+        if not self._probe_phase_done:
+            self.victim_model_class = VictimModelClass.MF_STYLE
+            self._probe_phase_done = True
+
+        return None
+
+    def _annotate_victim_class(
+        self, assignments: Dict[str, RoleAssignment]
+    ) -> Dict[str, RoleAssignment]:
+        """Stamp victim_model_class into sniper assignment metadata so workers
+        can choose the correct sniper variant without knowing global state."""
+
+        if self.victim_model_class == VictimModelClass.UNKNOWN:
+            return assignments
+
+        annotated: Dict[str, RoleAssignment] = {}
+        for aid, a in assignments.items():
+            if a.role == AgentRole.SNIPER:
+                meta = dict(a.metadata)
+                meta["victim_model_class"] = self.victim_model_class.value
+                annotated[aid] = RoleAssignment(
+                    step=a.step,
+                    agent_id=a.agent_id,
+                    role=a.role,
+                    rationale=a.rationale,
+                    metadata=meta,
+                )
+            else:
+                annotated[aid] = a
+        return annotated
+
     def assign_roles(
         self,
         observation: CoordinatorObservation,
         worker_states: Dict[str, WorkerState],
     ) -> Dict[str, RoleAssignment]:
         """Delegate role assignment to the configured policy.
+
+        During the probe phase (first ``_probe_steps`` steps) this method
+        returns diagnostic assignments and classifies the victim model.  After
+        classification it delegates to the configured policy and annotates
+        sniper assignments with the detected victim model class so workers can
+        choose the correct sniper variant.
 
         Args:
             observation: Environment state seen by the coordinator.
@@ -581,13 +823,36 @@ class Coordinator:
             A mapping from agent ID to role assignment for the step.
         """
 
+        # Probe phase: may return early with diagnostic assignments.
+        if not self._probe_phase_done:
+            probe_result = self._probe_assign(observation, worker_states)
+            if probe_result is not None:
+                self._last_assignments = probe_result
+                self.last_runtime_trace = {
+                    "sniper_lockouts": {},
+                    "profiler_forced": False,
+                    "probe_phase": True,
+                    "victim_model_class": self.victim_model_class.value,
+                    "probe_results": list(self._probe_results),
+                }
+                return probe_result
+
+        # Exploit phase: let the policy decide, then apply post-processing.
+        # Keep the LLM policy in sync with the detected model class.
+        if hasattr(self.policy, "victim_model_class"):
+            self.policy.victim_model_class = self.victim_model_class.value
+
         assignments = self.policy.assign(observation, worker_states)
         self._update_sniper_lockouts(observation)
         assignments = self._apply_lockouts(observation, assignments)
         assignments = self._ensure_profiler_presence(observation, worker_states, assignments)
+        assignments = self._annotate_victim_class(assignments)
         self._last_assignments = assignments
         self.last_runtime_trace = {
             "sniper_lockouts": dict(self._sniper_lockouts),
             "profiler_forced": any(a.role == AgentRole.PROFILER for a in assignments.values()),
+            "probe_phase": False,
+            "victim_model_class": self.victim_model_class.value,
+            "probe_results": list(self._probe_results),
         }
         return assignments
