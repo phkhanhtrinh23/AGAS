@@ -278,11 +278,14 @@ def _build_episode_recommender(
     return model
 
 
-def _extract_attack_interactions(history: list[dict]) -> pd.DataFrame:
+def _extract_attack_interactions(history: list[dict], roles: set[str] | None = None) -> pd.DataFrame:
     """Extract accepted action outcomes as interaction rows.
 
     Args:
         history: Episode history produced by ``AGASEpisodeRunner``.
+        roles: Optional set of role names (e.g. ``{"sniper"}``) to restrict
+            which interactions are extracted. When ``None`` all accepted
+            interactions are included regardless of role.
 
     Returns:
         DataFrame of accepted interactions with effective ratings.
@@ -291,6 +294,7 @@ def _extract_attack_interactions(history: list[dict]) -> pd.DataFrame:
     rows: list[dict] = []
     for entry in history:
         feedback = entry.get("feedback") or {}
+        assignments = entry.get("assignments") or {}
         for outcome in feedback.get("outcomes", []):
             if not outcome.get("accepted"):
                 continue
@@ -298,6 +302,11 @@ def _extract_attack_interactions(history: list[dict]) -> pd.DataFrame:
             if effective_rating is None:
                 continue
             action = outcome.get("action", {})
+            if roles is not None:
+                agent_id = str(action.get("agent_id", ""))
+                role = str((assignments.get(agent_id) or {}).get("role", "")).lower()
+                if role not in roles:
+                    continue
             rows.append(
                 {
                     "user_id": str(action.get("agent_id")),
@@ -677,7 +686,23 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
     segment_user_ids = base_env.segment_user_ids
 
     prompt_store = PromptStore(Path(args.prompt_root))
-    agent_ids = default_agent_ids(args.num_agents)
+
+    # RC1+RC2 fix: reuse real segment users as attack agents so they already have
+    # embeddings and graph edges in the target models trained on clean data.
+    if getattr(args, "use_segment_users_as_agents", False):
+        if len(segment_user_ids) < args.num_agents:
+            raise RuntimeError(
+                f"Not enough segment users ({len(segment_user_ids)}) to fill "
+                f"{args.num_agents} agent slots. Lower --num-agents or disable "
+                "--use-segment-users-as-agents."
+            )
+        agent_ids = list(segment_user_ids[:args.num_agents])
+    else:
+        agent_ids = default_agent_ids(args.num_agents)
+
+    # RC4 fix: restrict which roles contribute interactions to target model training.
+    _raw_roles = str(getattr(args, "transfer_attack_roles", "all")).strip().lower()
+    attack_roles: set[str] | None = None if _raw_roles == "all" else {r.strip() for r in _raw_roles.split(",")}
 
     surrogate_result = None
     attack_rows = pd.DataFrame(columns=["user_id", "item_id", "rating"])
@@ -703,12 +728,19 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
             ),
         )
         surrogate_result = runner.run()
-        attack_rows = _extract_attack_interactions(surrogate_result.history)
+        attack_rows = _extract_attack_interactions(surrogate_result.history, roles=attack_roles)
         attack_stats = _attack_outcome_stats(surrogate_result.history, positive_threshold=target_config.positive_threshold)
 
     option_a_results: dict[str, dict] = {}
     if mode in {"both", "option-a"}:
-        combined = pd.concat([interactions, attack_rows], ignore_index=True) if len(attack_rows) else interactions
+        if len(attack_rows):
+            combined = pd.concat([interactions, attack_rows], ignore_index=True)
+            # RC3 fix: deduplicate (user_id, item_id) pairs keeping the attack rating,
+            # which matters when segment users are used as agents and already rated
+            # some items in the clean data.
+            combined = combined.drop_duplicates(subset=["user_id", "item_id"], keep="last")
+        else:
+            combined = interactions
         for name in target_models:
             clean_model = _build_target_model(name, target_config)
             clean_model.fit(interactions, items=items)
@@ -824,6 +856,8 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "target_implicit_only": bool(target_config.implicit_only),
         "target_device": str(target_config.device),
         "target_lightgcn_layers": int(target_config.lightgcn_layers),
+        "use_segment_users_as_agents": bool(getattr(args, "use_segment_users_as_agents", False)),
+        "transfer_attack_roles": str(getattr(args, "transfer_attack_roles", "all")),
         "option_a": option_a_results if option_a_results else None,
         "option_b": option_b_results if option_b_results else None,
         "surrogate_episode_history": surrogate_result.history if surrogate_result is not None else None,
@@ -1114,6 +1148,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_transfer.add_argument("--target-device", default="cpu")
     p_transfer.add_argument("--target-lightgcn-layers", type=int, default=2)
+    p_transfer.add_argument(
+        "--use-segment-users-as-agents",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Use real segment user IDs (horror fans identified from clean data) as attack agents "
+            "instead of creating fresh fake agent_N accounts. This fixes the cold-start isolation "
+            "problem: segment users already have embeddings and graph edges in the target models, "
+            "so adding item-1215 to their history directly promotes it within the real user graph."
+        ),
+    )
+    p_transfer.add_argument(
+        "--transfer-attack-roles",
+        default="all",
+        help=(
+            "Comma-separated list of agent roles whose accepted interactions are injected into "
+            "target model training. Default 'all' includes every accepted interaction. "
+            "Use 'sniper' to inject only sniper-role interactions (target promotions only, "
+            "no profiler/camouflaguer noise that creates accidental positives for other items)."
+        ),
+    )
     p_transfer.add_argument("--output", default="outputs/transfer_result.json")
     p_transfer.set_defaults(func=cmd_run_transfer)
 

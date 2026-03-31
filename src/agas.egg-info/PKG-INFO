@@ -17,6 +17,8 @@ Requires-Dist: openai>=1.12
 Provides-Extra: dev
 Requires-Dist: pytest>=8.0; extra == "dev"
 Requires-Dist: pytest-cov>=5.0; extra == "dev"
+Provides-Extra: targets
+Requires-Dist: torch>=2.1; extra == "targets"
 
 # AGAS: Agentic-empowered Group Shilling Attacks in Recommender Systems
 
@@ -26,6 +28,8 @@ This repository implements an end-to-end research framework for **AGAS** (Agenti
 - a lightweight surrogate recommender model
 - a multi-agent AGAS simulator with role switching and defense-aware feedback
 - optional LLM-based coordinator policy using **OpenAI** or **Ollama**
+- optional LLM-based worker policies with editable per-role prompts
+- a black-box defense monitor that separates hidden defense state from public signals
 
 This code is provided for academic simulation and defense research only.
 
@@ -36,6 +40,7 @@ This code is provided for academic simulation and defense research only.
 ├── configs/
 │   └── default.yaml
 ├── data/                         # Provided datasets
+├── prompts/                      # Editable prompt templates for coordinator/workers
 ├── scripts/
 │   ├── preprocess_all.py
 │   ├── train_surrogate.py
@@ -43,6 +48,7 @@ This code is provided for academic simulation and defense research only.
 ├── src/agas/
 │   ├── agents/
 │   │   ├── coordinator.py
+│   │   ├── defender.py
 │   │   ├── messages.py
 │   │   └── worker.py
 │   ├── data/
@@ -50,6 +56,7 @@ This code is provided for academic simulation and defense research only.
 │   │   ├── pipeline.py
 │   │   └── loaders/
 │   ├── llm/
+│   │   ├── prompt_store.py
 │   │   └── providers.py
 │   ├── recsys/
 │   │   ├── prepared_data.py
@@ -100,7 +107,16 @@ Outputs are written to `processed/<dataset>/interactions.csv` and `processed/<da
 ## 3. Setup
 
 ```bash
+python -m venv agent_attack_venv
+source agent_attack_venv/bin/activate
+python -m pip install --upgrade pip
 python -m pip install -e .
+```
+
+Optional target-model dependencies (NeuMF/LightGCN):
+
+```bash
+python -m pip install -e ".[targets]"
 ```
 
 ## 4. Preprocess Data
@@ -166,6 +182,8 @@ Implemented in `src/agas/agents/messages.py`:
 - `WorkerActionReport`
 - `RatingAction`
 - `ActionOutcome`
+- `AgentBlackBoxSignal`
+- `DefenseReport`
 - `EnvironmentFeedback`
 - generic envelope `ProtocolMessage`
 
@@ -178,7 +196,12 @@ Implemented in `src/agas/agents/messages.py`:
   - t=1 infiltration
   - t=2 snipe
   - t>=3 evasion/adaptive rotation
-- `LLMCoordinatorPolicy`: optional LLM role assignment from structured state
+- `LLMCoordinatorPolicy`: optional LLM role assignment from structured black-box state
+
+Coordinator prompt templates are loaded from:
+
+- `prompts/coordinator/system.txt`
+- `prompts/coordinator/user.txt`
 
 ### Defense-aware environment
 
@@ -189,6 +212,207 @@ Implemented in `src/agas/agents/messages.py`:
 - spike detector alerts for synchronized max-ratings
 - trust/risk state transitions per agent
 - target ranking feedback loop
+
+### Black-box coordinator view
+
+By default, the coordinator does not directly see hidden defense alerts or lockdown state.
+Instead it receives black-box signals derived from:
+
+- dropped actions
+- discounted effective ratings
+- suppression streaks
+- weak target-rank movement
+
+Hidden defense activity is still logged separately through `DefenseReport` for analysis.
+
+### Defense monitor agent
+
+### Suppression Handling (Sniper Lockouts + Profiler Probes)
+
+Coordinator runtime guardrails now include:
+
+- **Sniper lockouts**: when a sniper shows suppression signals, it is locked
+  for `N` steps and forced into `inactive` (or `camouflaguer`).
+- **Profiler probes after suppression**: when suppression streaks rise, the
+  coordinator forces a profiler probe to check whether ratings are still
+  being integrated.
+
+CLI knobs (defaults shown):
+
+- `--sniper-lock-steps 2`
+- `--sniper-lock-suspicion 0.6`
+- `--sniper-lock-suppression-streak 2`
+- `--sniper-lock-role inactive`
+- `--profiler-probe-suppression-streak 1`
+
+Example run that triggers suppression and lockouts:
+
+```bash
+agas run-episode \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --target-item-id 101 \
+  --num-steps 8 \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --spike-threshold 1 \
+  --lockdown-drop-prob 0.7 \
+  --sniper-lock-steps 2 \
+  --sniper-lock-suppression-streak 1 \
+  --output outputs/episode_lockout_example.json
+```
+
+The per-step JSON contains `coordinator_runtime_trace` with active lockouts.
+Example from `outputs/episode_lockout_example.json`:
+
+- step 3: `sniper_lockouts` shows `agent_2` and `agent_3` locked for 2 steps
+- step 4: lockouts decay and `agent_4` enters lockout after suppression
+
+### Group Attack Detection (Collusion Signals)
+
+The defense monitor now computes **group-collusion signals** based on per-step
+item overlap between agents. These signals appear in each agent’s
+`signals_by_agent` as:
+
+- `group_overlap`: max Jaccard overlap with any other agent’s items
+- `group_suspicion`: overlap above threshold (optionally requires target item)
+
+CLI knobs:
+
+- `--group-overlap-threshold` (default `0.6`)
+- `--group-target-required` (default `true`)
+- `--group-weight` (default `0.2`)
+
+These signals contribute to the public `suspected_filtering_score` and can
+trigger lockouts or profiler probes.
+
+Example run (group overlap threshold lowered to surface collusion):
+
+```bash
+agas run-episode \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --target-item-id 101 \
+  --num-steps 6 \
+  --group-overlap-threshold 0.2 \
+  --group-target-required \
+  --output outputs/episode_group_detection.json
+```
+
+The output includes per-agent `group_overlap` and `group_suspicion` in
+`history[*].feedback.defense_report.public_signals_by_agent`.
+
+### Defense Quarantine (Temporary Bans)
+
+The environment can optionally model temporary account quarantine (a defense-side action)
+after certain internal detections (spike alerts or group collusion). While quarantined,
+all actions from that agent are dropped with reason `Dropped: account quarantined by defense`.
+
+CLI knobs:
+
+- `--quarantine-steps` (default `0`, disabled)
+- `--quarantine-on-spike-alert / --no-quarantine-on-spike-alert`
+- `--quarantine-on-group-collusion / --no-quarantine-on-group-collusion`
+
+Example:
+
+```bash
+agas run-episode \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --target-item-id 101 \
+  --num-steps 8 \
+  --spike-threshold 1 \
+  --group-overlap-threshold 0.2 \
+  --group-target-required \
+  --quarantine-steps 2 \
+  --output outputs/quarantine_example.json
+```
+
+### Surrogate vs Target Models (Option A vs B)
+
+- The **surrogate model** is the lightweight SVD-based recommender in
+  `src/agas/recsys/surrogate.py`. It is updated **every step** during an
+  episode (online refit).
+- The **target models** (NeuMF, LightGCN) are only used in transfer evaluation:
+  - **Option A (offline):** run the episode on the surrogate, then retrain
+    target models once on clean vs. clean+attack.
+  - **Option B (in-loop):** replace the surrogate with a target model and
+    retrain it each step for live feedback.
+
+Coordinator can optionally receive per-agent recent outcomes (richer than public
+aggregate signals) via `--coordinator-agent-memory`.
+
+Detailed algorithm: `docs/coordinator_agent_memory_algorithm.md`.
+
+## Related Papers (Short Positioning)
+
+- **AgentAttack: LLM Agents for Multi-Strategy Shilling Attacks (2026)**  
+  LLM-driven, black-box shilling with multi-round feedback and adaptive strategy
+  selection. It uses agent reasoning but does not model explicit multi-role
+  coordination (Profiler/Camouflaguer/Sniper) or group-level defense signals.
+
+- **AgentSA / LLM Agent-based Shilling Attack (WSDM’26)**  
+  Low-knowledge/black-box LLM agents with profile, memory, and action modules
+  (including review generation). Focuses on per-agent memory and human-like
+  behavior rather than centralized role switching and coordinated team dynamics.
+
+## 7. Transfer Evaluation (Option A + Option B)
+
+The CLI includes a `run-transfer` command to evaluate transfer to real target models:
+
+- **Option A (offline target models)**: run AGAS on the surrogate, extract accepted interactions, then
+  retrain target models on clean vs. clean+attack and measure rank shift.
+- **Option B (in-loop target models)**: replace the surrogate with NeuMF/LightGCN inside the loop and
+  retrain per step.
+
+Example (both options):
+
+```bash
+agas run-transfer \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --target-item-id 101 \
+  --target-keyword horror \
+  --num-steps 6 \
+  --transfer-mode both \
+  --target-models neumf,lightgcn \
+  --output outputs/transfer_result.json
+```
+
+To generate attack interactions using a heavier in-loop recommender while still
+reporting offline transfer to multiple target models (Option A), set:
+
+```bash
+agas run-transfer --transfer-mode option-a --episode-model lightgcn --target-models neumf,lightgcn ...
+```
+
+Tune target model training as needed:
+
+```bash
+agas run-transfer \
+  --target-epochs 3 \
+  --target-embedding-dim 64 \
+  --target-batch-size 1024 \
+  --target-device cpu
+```
+
+`src/agas/agents/defender.py` implements `DefenseMonitorAgent`, which:
+
+- records hidden defense interventions
+- emits black-box public signals per worker
+- logs whether the defense actually intervened during a step
+
+### Worker prompts
+
+Per-role worker prompts are stored under `prompts/`:
+
+- `prompts/worker_profiler/`
+- `prompts/worker_camouflaguer/`
+- `prompts/worker_sniper/`
+- `prompts/worker_inactive/`
+
+These prompt files are loaded only when worker policy is set to `openai` or `ollama`.
 
 ## 7. Run AGAS Episode
 
@@ -206,13 +430,39 @@ agas run-episode \
   --output outputs/episode_result.json
 ```
 
+LLM coordinator with rule-based workers:
+
+```bash
+agas run-episode \
+  --coordinator-policy openai \
+  --worker-policy rule \
+  --prompt-root prompts
+```
+
+LLM coordinator with LLM workers:
+
+```bash
+agas run-episode \
+  --coordinator-policy openai \
+  --worker-policy openai \
+  --llm-model gpt-5-mini \
+  --worker-llm-model gpt-5-mini \
+  --prompt-root prompts
+```
+
+Expose hidden defense state directly to the coordinator (white-box mode):
+
+```bash
+agas run-episode --expose-defense-state
+```
+
 ### OpenAI coordinator mode
 
 ```bash
 export OPENAI_API_KEY=YOUR_KEY
 agas run-episode \
   --coordinator-policy openai \
-  --llm-model gpt-4o-mini
+  --llm-model gpt-5-mini
 ```
 
 ### Ollama coordinator mode
@@ -241,7 +491,7 @@ Run smoke tests:
 pytest -q
 ```
 
-Current test status in this environment: **4 passed**.
+Current test status in this environment: **6 passed**.
 
 ## 9. Notes on Large Datasets
 
@@ -254,4 +504,5 @@ Use `--max-rows-per-dataset` / `--max-interactions` during iteration, then switc
 - preprocessing pipeline: `src/agas/data/pipeline.py`
 - surrogate model: `src/agas/recsys/surrogate.py`
 - AGAS policies: `src/agas/agents/coordinator.py`, `src/agas/agents/worker.py`
+- defense monitor: `src/agas/agents/defender.py`
 - simulation runner: `src/agas/simulation/episode.py`
