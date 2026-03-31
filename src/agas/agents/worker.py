@@ -44,6 +44,19 @@ class WorkerPolicyConfig:
     sniper_competitor_actions: int = 2
     implicit_safe: bool = False
     positive_threshold: float = 4.0
+    # Graph-sniper mode: designed for degree-normalized models (e.g. LightGCN).
+    # Instead of rating the target directly (which inflates its degree and dilutes
+    # all its existing edges), snipers rate cluster-neighbour items at 5.0 so that
+    # graph diffusion propagates the signal to the target without touching its degree.
+    # Competitors are rated at 5.0 (not 1.0) to inflate their degrees and reduce
+    # their edge weights, pushing them lower in the ranking.
+    graph_sniper: bool = False
+    graph_sniper_neighbor_actions: int = 3
+    # Sequential-sniper mode: for recency-aware models (SASRec, GRU4Rec, BERT4Rec).
+    # Rates genre-consistent filler items first to build interaction history, then
+    # rates the target item last so the next-item prediction bias fires on the target.
+    sequential_sniper: bool = False
+    sequential_filler_actions: int = 3
 
 
 class WorkerAgent:
@@ -145,7 +158,9 @@ class WorkerAgent:
         elif assignment.role == AgentRole.CAMOUFLAGEUR:
             actions = self._act_camouflaguer(ctx)
         elif assignment.role == AgentRole.SNIPER:
-            actions = self._act_sniper(ctx)
+            actions = self._act_sniper(ctx, assignment)
+        elif assignment.role == AgentRole.DIAGNOSTIC:
+            actions = self._act_diagnostic(ctx, assignment)
         else:
             actions = []
 
@@ -286,16 +301,138 @@ class WorkerAgent:
             )
         return out
 
-    def _act_sniper(self, ctx: WorkerContext) -> List[RatingAction]:
-        """Deliver the fixed high-intensity sniper payload.
+    def _act_diagnostic(self, ctx: WorkerContext, assignment: RoleAssignment) -> List[RatingAction]:
+        """Run a single targeted probe action for victim-model classification.
+
+        Three probe types are supported via ``assignment.metadata["diagnostic_type"]``:
+
+        ``"direct"``     – rate target at 5.0 only; measures direct-signal effect.
+        ``"sequential"`` – rate fillers first, target last; measures recency effect.
+
+        Args:
+            ctx: Environment-provided item pools used by role policies.
+            assignment: Role assignment carrying ``diagnostic_type`` in metadata.
+
+        Returns:
+            List of rating actions for the requested probe type.
+        """
+
+        dtype = str((assignment.metadata or {}).get("diagnostic_type", "direct")).lower()
+
+        if dtype == "sequential":
+            filler_pool = [i for i in ctx.target_cluster_items if str(i) != str(ctx.target_item_id)]
+            out: List[RatingAction] = []
+            for item_id in self._sample_items(filler_pool, self.config.sequential_filler_actions):
+                out.append(
+                    RatingAction(
+                        agent_id=self.state.agent_id,
+                        item_id=item_id,
+                        rating=4.0,
+                        reason=(
+                            "Diagnostic sequential probe: genre filler rated first to build "
+                            "interaction history before target rating."
+                        ),
+                    )
+                )
+            out.append(
+                RatingAction(
+                    agent_id=self.state.agent_id,
+                    item_id=ctx.target_item_id,
+                    rating=5.0,
+                    reason=(
+                        "Diagnostic sequential probe: target rated last to test whether "
+                        "recency ordering gives extra rank lift vs direct rating."
+                    ),
+                )
+            )
+            return out
+
+        # Default: direct probe.
+        return [
+            RatingAction(
+                agent_id=self.state.agent_id,
+                item_id=ctx.target_item_id,
+                rating=5.0,
+                reason=(
+                    "Diagnostic direct probe: rating target at 5.0 to test whether a direct "
+                    "positive edge improves rank (MF/Sequential) or hurts it (LightGCN)."
+                ),
+            )
+        ]
+
+    def _act_sequential_sniper(self, ctx: WorkerContext) -> List[RatingAction]:
+        """Sequential-model sniper: build genre history first, rate target last.
+
+        In recency-aware models (SASRec, GRU4Rec, BERT4Rec) the model predicts the
+        *next* item from recent history.  The most recently rated item carries the
+        highest attention weight.  Rating the target last places it in the
+        highest-weight recency slot.
 
         Args:
             ctx: Environment-provided item pools used by role policies.
 
         Returns:
-            A list of sniper payload actions with a 5.0 target push and 1.0 competitor hits.
+            Fillers at 4.0–5.0 followed by target at 5.0 (target is always last).
         """
 
+        filler_pool = [i for i in ctx.target_cluster_items if str(i) != str(ctx.target_item_id)]
+        out: List[RatingAction] = []
+
+        for item_id in self._sample_items(filler_pool, self.config.sequential_filler_actions):
+            out.append(
+                RatingAction(
+                    agent_id=self.state.agent_id,
+                    item_id=item_id,
+                    rating=self._rand.choice([4.0, 4.5, 5.0]),
+                    reason=(
+                        "Sequential sniper: genre-consistent filler builds interaction history "
+                        "before target rating."
+                    ),
+                )
+            )
+
+        out.append(
+            RatingAction(
+                agent_id=self.state.agent_id,
+                item_id=ctx.target_item_id,
+                rating=5.0,
+                reason=(
+                    "Sequential sniper: target rated last — recency-aware model treats it as "
+                    "the highest-weight recent interaction (next-item prediction bias)."
+                ),
+            )
+        )
+        return out
+
+    def _act_sniper(self, ctx: WorkerContext, assignment: RoleAssignment | None = None) -> List[RatingAction]:
+        """Deliver the sniper payload, dispatching to the correct variant.
+
+        Variant priority:
+        1. ``assignment.metadata["victim_model_class"]`` set by Coordinator after
+           probe-phase classification.
+        2. ``self.config.graph_sniper`` legacy flag.
+        3. ``self.config.sequential_sniper`` legacy flag.
+        4. Default MF-style direct sniper.
+
+        Args:
+            ctx: Environment-provided item pools used by role policies.
+            assignment: Coordinator-issued assignment; carries victim model metadata.
+
+        Returns:
+            Rating actions for the chosen sniper variant.
+        """
+
+        victim_class = str(
+            ((assignment.metadata if assignment else None) or {}).get("victim_model_class", "")
+        ).lower()
+
+        if victim_class == "lightgcn_style" or self.config.graph_sniper:
+            return self._act_graph_sniper(ctx)
+
+        if victim_class == "sequential_style" or self.config.sequential_sniper:
+            return self._act_sequential_sniper(ctx)
+
+        # MF-style (or unknown): direct target rating.
         out = [
             RatingAction(
                 agent_id=self.state.agent_id,
@@ -319,15 +456,147 @@ class WorkerAgent:
             )
         return out
 
-    def _default_prompt_text(self, role: AgentRole) -> tuple[str, str]:
+    def _act_graph_sniper(self, ctx: WorkerContext) -> List[RatingAction]:
+        """Graph-aware sniper payload for degree-normalised models (e.g. LightGCN).
+
+        Standard snipers rate the target item at 5.0, but in LightGCN every new
+        edge added to the target increases its degree and dilutes the weight of ALL
+        its existing edges via D^{-1/2} A D^{-1/2} normalisation. This causes the
+        attack to hurt the target rather than help it.
+
+        This variant instead:
+        1. Rates cluster-neighbour items (same genre, NOT the target) at 5.0 so that
+           graph diffusion propagates the signal to the target without touching its
+           degree.
+        2. Rates competitors at 5.0 (not 1.0) to inflate their degrees, weakening
+           their existing edges and pushing them lower in the ranking relative to the
+           target.
+
+        Args:
+            ctx: Environment-provided item pools used by role policies.
+
+        Returns:
+            List of rating actions implementing the graph-aware sniper strategy.
+        """
+
+        out: List[RatingAction] = []
+
+        # Step 1: rate cluster neighbours at 5.0 (exclude the target itself)
+        neighbor_pool = [
+            i for i in ctx.target_cluster_items if str(i) != str(ctx.target_item_id)
+        ]
+        n_neighbors = int(self.config.graph_sniper_neighbor_actions)
+        for item_id in self._sample_items(neighbor_pool, n_neighbors):
+            out.append(
+                RatingAction(
+                    agent_id=self.state.agent_id,
+                    item_id=item_id,
+                    rating=5.0,
+                    reason=(
+                        "Graph-sniper: rating cluster neighbour at 5.0 so graph "
+                        "diffusion lifts the target without inflating its degree."
+                    ),
+                )
+            )
+
+        # Step 2: rate competitors at 5.0 to inflate their degrees (degree
+        # normalisation will then reduce the weight of their existing edges,
+        # pushing them lower in the ranking relative to the target).
+        competitor_actions = int(self.config.sniper_competitor_actions)
+        for item_id in self._sample_items(ctx.competitor_items, competitor_actions):
+            out.append(
+                RatingAction(
+                    agent_id=self.state.agent_id,
+                    item_id=item_id,
+                    rating=5.0,
+                    reason=(
+                        "Graph-sniper: rating competitor at 5.0 to inflate its degree "
+                        "and reduce the weight of its existing edges via normalisation."
+                    ),
+                )
+            )
+
+        return out
+
+    def _default_prompt_text(self, role: AgentRole, assignment: RoleAssignment | None = None) -> tuple[str, str]:
         """Return fallback prompt templates for a worker role.
+
+        Sniper prompts are tailored to the victim model class carried in
+        ``assignment.metadata["victim_model_class"]`` when available.
 
         Args:
             role: Assigned worker role.
+            assignment: Optional assignment providing victim model context for
+                role-specific prompt customisation.
 
         Returns:
             Tuple ``(system_prompt, user_template)``.
         """
+
+        victim_class = str(
+            ((assignment.metadata if assignment else None) or {}).get("victim_model_class", "unknown")
+        ).lower()
+
+        _sniper_system_by_class = {
+            "mf_style": (
+                "You are the Sniper attack agent in an AGAS simulation attacking an MF/NeuMF-style "
+                "recommender. Purity of signal is critical: rate the target item 5.0. Keep your profile "
+                "sparse — avoid unnecessary filler ratings that dilute the target signal. You may rate "
+                "1–2 strong competitors at 1.0 to suppress them. Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
+            ),
+            "lightgcn_style": (
+                "You are the Sniper attack agent in an AGAS simulation attacking a LightGCN-style "
+                "recommender. CRITICAL: do NOT rate the target item directly — every fake edge you "
+                "add to the target inflates its degree and dilutes all its existing edges via "
+                "D^{-1/2} A D^{-1/2} normalisation, making the attack counterproductive. "
+                "Instead: (1) rate 2–3 cluster-neighbour items at 5.0 so graph diffusion propagates "
+                "the signal to the target; (2) rate 1–2 competitor items at 5.0 to inflate their "
+                "degrees and weaken their edge weights, pushing them lower in the ranking. "
+                'Return strictly valid JSON: {"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
+            ),
+            "sequential_style": (
+                "You are the Sniper attack agent in an AGAS simulation attacking a sequential "
+                "recommender (SASRec/GRU4Rec/BERT4Rec). The model predicts the NEXT item from "
+                "recent history — the last-rated item carries the highest attention weight. "
+                "Strategy: (1) rate 3–4 genre-consistent filler items at 4.0–5.0 FIRST to build "
+                "a believable interaction history; (2) rate the target item 5.0 as your LAST "
+                "action — do NOT rate anything after the target. "
+                'Return strictly valid JSON: {"actions":[{"item_id":"...","rating":4.5,"reason":"..."}]}.'
+            ),
+        }
+        _sniper_user_by_class = {
+            "mf_style": (
+                "Generate up to {{max_actions}} sniper actions for an MF-style victim.\n"
+                "Context:\n{{context_json}}\n"
+                "Rate the target item 5.0 first. Optionally add 1–2 competitor ratings at 1.0."
+            ),
+            "lightgcn_style": (
+                "Generate up to {{max_actions}} sniper actions for a LightGCN-style victim.\n"
+                "Context:\n{{context_json}}\n"
+                "Do NOT include the target item. Rate cluster-neighbour items and competitor items at 5.0."
+            ),
+            "sequential_style": (
+                "Generate up to {{max_actions}} sniper actions for a sequential-model victim.\n"
+                "Context:\n{{context_json}}\n"
+                "Rate genre fillers (4.0–5.0) first, then the target item 5.0 LAST. "
+                "The target must be the final action in your list."
+            ),
+        }
+
+        default_sniper_system = (
+            "You are the Sniper attack agent in an AGAS simulation. Your goal is to promote the target "
+            "item aggressively and, when appropriate, demote nearby competitors. Operate within the "
+            "allowed candidate items and return concise reasons. You receive a rolling summary of your "
+            "own recent actions and outcomes; use it to reason about past success or suppression. "
+            'Return strictly valid JSON: {"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
+        )
+        default_sniper_user = (
+            "Generate up to {{max_actions}} sniper actions.\n"
+            "Context:\n{{context_json}}\n"
+            "The target item should receive the strongest positive rating. If competitor items are used, "
+            "use strong negative ratings sparingly."
+        )
 
         system_by_role = {
             AgentRole.PROFILER: (
@@ -335,27 +604,25 @@ class WorkerAgent:
                 "items to test whether the recommender is integrating new activity. You receive a rolling "
                 "summary of your own recent actions and outcomes; use it to reason about past success or "
                 "suppression. Return strictly valid "
-                'JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}. '
+                'JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
             ),
             AgentRole.CAMOUFLAGEUR: (
                 "You are the Camouflaguer agent in an AGAS simulation. Choose plausible ratings on target-"
                 "domain or benign noise items to gain trust and avoid anomaly detection. You receive a "
                 "rolling summary of your own recent actions and outcomes; use it to reason about past "
                 "success or suppression. Return strictly "
-                'valid JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}. '
+                'valid JSON: {"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
             ),
-            AgentRole.SNIPER: (
-                "You are the Sniper attack agent in an AGAS simulation. Your goal is to promote the target "
-                "item aggressively and, when appropriate, demote nearby competitors. Operate within the "
-                "allowed candidate items and return concise reasons. You receive a rolling summary of your "
-                "own recent actions and outcomes; use it to reason about past success or suppression. "
-                "Return strictly valid JSON: "
-                '{"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}. '
-            ),
+            AgentRole.SNIPER: _sniper_system_by_class.get(victim_class, default_sniper_system),
             AgentRole.INACTIVE: (
-                "You are the Inactive agent in an AGAS simulation. You receive a rolling summary of your "
-                "own recent actions and outcomes; use it to reason about past success or suppression. "
-                'Return strictly valid JSON with an empty action list: {"actions":[]}. '
+                "You are the Inactive agent in an AGAS simulation. "
+                'Return strictly valid JSON with an empty action list: {"actions":[]}.'
+            ),
+            AgentRole.DIAGNOSTIC: (
+                "You are the Diagnostic agent in an AGAS simulation. Your sole purpose is to run a "
+                "single probe action to help classify the victim recommender architecture. Follow the "
+                "diagnostic_type instruction precisely. Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
             ),
         }
         user_by_role = {
@@ -369,15 +636,17 @@ class WorkerAgent:
                 "Context:\n{{context_json}}\n"
                 "Favor plausible ratings on the allowed candidate items."
             ),
-            AgentRole.SNIPER: (
-                "Generate up to {{max_actions}} sniper actions.\n"
-                "Context:\n{{context_json}}\n"
-                "The target item should receive the strongest positive rating. If competitor items are used, "
-                "use strong negative ratings sparingly."
-            ),
+            AgentRole.SNIPER: _sniper_user_by_class.get(victim_class, default_sniper_user),
             AgentRole.INACTIVE: "No action is required.\nContext:\n{{context_json}}",
+            AgentRole.DIAGNOSTIC: (
+                "Run the diagnostic probe described in the context.\n"
+                "Context:\n{{context_json}}\n"
+                "Use the allowed candidate items only."
+            ),
         }
-        return system_by_role[role], user_by_role[role]
+        sys_prompt = system_by_role.get(role, default_sniper_system)
+        usr_prompt = user_by_role.get(role, "Context:\n{{context_json}}")
+        return sys_prompt, usr_prompt
 
     def _candidate_context(self, role: AgentRole, ctx: WorkerContext) -> tuple[list[str], int]:
         """Return allowed item pool and maximum action count for the current role.
@@ -403,6 +672,10 @@ class WorkerAgent:
         if role == AgentRole.SNIPER:
             focus = [str(ctx.target_item_id)] + list(ctx.competitor_items[:10])
             return list(dict.fromkeys(focus)), 1 + self.config.sniper_competitor_actions
+        if role == AgentRole.DIAGNOSTIC:
+            # Allow target + cluster neighbours for diagnostic probes.
+            focus = [str(ctx.target_item_id)] + list(ctx.target_cluster_items[:20])
+            return list(dict.fromkeys(focus)), 1 + self.config.sequential_filler_actions
         return [], 0
 
     def _sanitize_llm_actions(
@@ -503,7 +776,7 @@ class WorkerAgent:
             "trajectory_summary": list(self._trajectory_summary),
         }
 
-        default_system, default_user = self._default_prompt_text(role)
+        default_system, default_user = self._default_prompt_text(role, assignment)
         bundle = self._prompt_store.load(
             key=f"worker_{role.value}",
             default_system=default_system,
@@ -543,7 +816,9 @@ class WorkerAgent:
             elif role == AgentRole.CAMOUFLAGEUR:
                 actions = self._act_camouflaguer(ctx)
             elif role == AgentRole.SNIPER:
-                actions = self._act_sniper(ctx)
+                actions = self._act_sniper(ctx, assignment)
+            elif role == AgentRole.DIAGNOSTIC:
+                actions = self._act_diagnostic(ctx, assignment)
             else:
                 actions = []
 
