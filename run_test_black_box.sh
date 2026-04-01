@@ -93,20 +93,35 @@ set -euo pipefail
 # Add --target-explicit-negative-threshold 2.0 so competitor 1.0 ratings become forced negatives
 # Reduce snipers per step to limit degree inflation on LightGCN
 
+# PYTHONPATH=src python -m agas.cli run-transfer \
+#   --victim-model-hint mf \
+#   --probe-steps 0 \
+#   --target-models neumf,lightgcn \
+#   --num-agents 4 --num-steps 8 \
+#   --target-keyword horror \
+#   --coordinator-policy rule --worker-policy rule \
+#   --transfer-attack-roles sniper \
+#   --transfer-mode option-a \
+#   --max-interactions 10000 \
+#   --processed-root processed \
+#   --dataset ml-latest-small \
+#   --target-item-id 1215 \
+#   --transfer-candidate-set cluster \
+#   --output outputs/experiments/expB_mf_yours.json
+
 PYTHONPATH=src python -m agas.cli run-transfer \
-  --episode-model lightgcn \
   --victim-model-hint mf \
-  --use-segment-users-as-agents \
+  --probe-steps 0 \
+  --target-models neumf,lightgcn \
+  --num-agents 4 --num-steps 8 \
+  --target-keyword horror \
+  --coordinator-policy rule --worker-policy rule \
   --transfer-attack-roles sniper \
   --transfer-mode option-a \
   --max-interactions 10000 \
   --processed-root processed \
   --dataset ml-latest-small \
   --target-item-id 1215 \
-  --target-keyword horror \
-  --num-steps 20 \
-  --goal-rank 3 \
-  --num-agents 4 \
-  --coordinator-policy rule \
   --transfer-candidate-set cluster \
-  --output outputs/transfer_rc_adapted_strategy_lightgcn_victim_mf_probe_0_option_a_only.json
+  --output outputs/experiments/expB_mf_yours.json
+
