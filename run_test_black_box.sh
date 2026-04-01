@@ -126,8 +126,45 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --probe-steps 0 \
   --use-segment-users-as-agents \
   --rule-max-snipers 3 \
-  --target-models lightgcn \
+  --target-models neumf,lightgcn \
   --transfer-candidate-set cluster \
   --output outputs/experiments/expE_reproduce_lgcn_direct_realusers_snipers3_cluster.json
 
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --victim-model-hint auto \
+  --probe-steps 2 \
+  --target-models neumf,lightgcn \
+  --num-agents 4 \
+  --num-steps 8 \
+  --target-keyword horror \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --transfer-attack-roles sniper \
+  --transfer-mode option-a \
+  --max-interactions 10000 \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --target-item-id 1215 \
+  --transfer-candidate-set cluster \
+  --transfer-split-by-target-model \
+  --output outputs/experiments/expA_split_by_target.json
+
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 8 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --episode-model sequential \
+  --victim-model-hint sequential \
+  --probe-steps 0 \
+  --target-models sequential \
+  --transfer-candidate-set cluster \
+  --output outputs/experiments/expSeq_sequential_target.json
 

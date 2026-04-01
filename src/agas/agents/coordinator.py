@@ -433,6 +433,9 @@ class Coordinator:
         runtime_config: CoordinatorRuntimeConfig | None = None,
         probe_steps: int = 2,
         victim_model_hint: str = "auto",
+        probe_repeats: int = 1,
+        probe_use_graph: bool = False,
+        probe_consensus: bool = False,
     ):
         """Store the selected assignment policy implementation.
 
@@ -469,9 +472,13 @@ class Coordinator:
             self._probe_phase_done = probe_steps <= 0
 
         self._probe_steps: int = max(0, int(probe_steps))
-        # rank recorded just before each probe action fires, so we can measure delta
-        self._probe_rank_before: Dict[int, int] = {}  # probe_step_index -> rank
-        # list of {"type": "direct"|"sequential", "delta": int}
+        self._probe_repeats: int = max(1, int(probe_repeats))
+        self._probe_use_graph: bool = bool(probe_use_graph)
+        self._probe_consensus: bool = bool(probe_consensus)
+        # rank recorded just before each probe action fires, keyed by step
+        self._probe_rank_before: Dict[int, int] = {}
+        self._probe_type_by_step: Dict[int, str] = {}
+        # list of {"type": "direct"|"sequential"|"graph", "delta": int}
         self._probe_results: list = []
 
     @staticmethod
@@ -721,62 +728,119 @@ class Coordinator:
             return None
 
         # ---- read results from previous probe step ----
-        if step == 1 and 0 in self._probe_rank_before:
-            direct_delta = self._probe_rank_before[0] - observation.target_rank
-            self._probe_results.append({"type": "direct", "delta": direct_delta})
+        if (step - 1) in self._probe_rank_before:
+            prev_type = self._probe_type_by_step.get(step - 1, "direct")
+            delta = self._probe_rank_before[step - 1] - observation.target_rank
+            self._probe_results.append({"type": prev_type, "delta": delta})
 
-            if direct_delta <= 0:
-                # Direct rating hurt or had no effect → LightGCN-style.
-                self.victim_model_class = VictimModelClass.LIGHTGCN_STYLE
-                self._probe_phase_done = True
-                return None  # hand over to normal assign
+        def _deltas(t: str) -> list:
+            return [r["delta"] for r in self._probe_results if r["type"] == t]
 
-        if step == 2 and 1 in self._probe_rank_before and not self._probe_phase_done:
-            sequential_delta = self._probe_rank_before[1] - observation.target_rank
-            self._probe_results.append({"type": "sequential", "delta": sequential_delta})
-            direct_delta = next(
-                (r["delta"] for r in self._probe_results if r["type"] == "direct"), 0
-            )
-            # Sequential models show markedly better lift when target is rated last.
-            if sequential_delta > direct_delta * 1.3 and sequential_delta > 0:
-                self.victim_model_class = VictimModelClass.SEQUENTIAL_STYLE
-            else:
-                self.victim_model_class = VictimModelClass.MF_STYLE
+        def _avg(vals: list[float]) -> float:
+            return float(sum(vals) / max(1, len(vals)))
+
+        def _consensus(vals: list[float], want_positive: bool) -> bool:
+            if not self._probe_consensus:
+                return True
+            if not vals:
+                return False
+            need = (len(vals) // 2) + 1
+            if want_positive:
+                return sum(1 for v in vals if v > 0) >= need
+            return sum(1 for v in vals if v <= 0) >= need
+
+        direct_vals = _deltas("direct")
+        graph_vals = _deltas("graph")
+        seq_vals = _deltas("sequential")
+
+        # Stop probing if we hit the step budget without classification.
+        if self._probe_steps > 0 and step >= self._probe_steps and not self._probe_phase_done:
+            self.victim_model_class = VictimModelClass.MF_STYLE
             self._probe_phase_done = True
             return None
 
         # ---- assign next probe action ----
-        if step == 0 and not self._probe_phase_done:
-            self._probe_rank_before[0] = observation.target_rank
+        if len(direct_vals) < self._probe_repeats and not self._probe_phase_done:
+            self._probe_rank_before[step] = observation.target_rank
+            self._probe_type_by_step[step] = "direct"
             assignments = self._make_inactive(step, agent_ids)
-            probe_agent = agent_ids[0]
+            probe_agent = agent_ids[step % len(agent_ids)]
             assignments[probe_agent] = RoleAssignment(
                 step=step,
                 agent_id=probe_agent,
                 role=AgentRole.DIAGNOSTIC,
                 rationale=(
-                    "Probe 0: rating target directly at 5.0 to test whether a direct positive "
+                    "Probe: rating target directly at 5.0 to test whether a direct positive "
                     "signal improves the rank (MF/Sequential) or hurts it (LightGCN)."
                 ),
                 metadata={"diagnostic_type": "direct"},
             )
             return assignments
 
-        if step == 1 and not self._probe_phase_done and self._probe_steps >= 2:
-            self._probe_rank_before[1] = observation.target_rank
-            assignments = self._make_inactive(step, agent_ids)
-            probe_agent = agent_ids[1] if len(agent_ids) > 1 else agent_ids[0]
-            assignments[probe_agent] = RoleAssignment(
-                step=step,
-                agent_id=probe_agent,
-                role=AgentRole.DIAGNOSTIC,
-                rationale=(
-                    "Probe 1: rating genre-consistent fillers first then target last to test "
-                    "whether recency ordering gives extra lift (Sequential) vs flat gain (MF)."
-                ),
-                metadata={"diagnostic_type": "sequential"},
-            )
-            return assignments
+        # Classification after direct probes.
+        if len(direct_vals) >= self._probe_repeats and not self._probe_phase_done:
+            direct_avg = _avg(direct_vals)
+            if direct_avg <= 0 and _consensus(direct_vals, want_positive=False):
+                # Direct rating hurt or had no effect → LightGCN-style.
+                if self._probe_use_graph and len(graph_vals) < self._probe_repeats:
+                    self._probe_rank_before[step] = observation.target_rank
+                    self._probe_type_by_step[step] = "graph"
+                    assignments = self._make_inactive(step, agent_ids)
+                    probe_agent = agent_ids[step % len(agent_ids)]
+                    assignments[probe_agent] = RoleAssignment(
+                        step=step,
+                        agent_id=probe_agent,
+                        role=AgentRole.DIAGNOSTIC,
+                        rationale="Probe: graph neighbour ratings to test diffusion lift.",
+                        metadata={"diagnostic_type": "graph"},
+                    )
+                    return assignments
+                self.victim_model_class = VictimModelClass.LIGHTGCN_STYLE
+                self._probe_phase_done = True
+                return None
+
+        # If we used graph probes, we can still classify LightGCN on positive diffusion.
+        if (
+            self._probe_use_graph
+            and len(graph_vals) >= self._probe_repeats
+            and not self._probe_phase_done
+        ):
+            if _avg(graph_vals) > 0 and _consensus(graph_vals, want_positive=True):
+                self.victim_model_class = VictimModelClass.LIGHTGCN_STYLE
+                self._probe_phase_done = True
+                return None
+
+        # Sequential vs MF probes
+        if len(direct_vals) >= self._probe_repeats and not self._probe_phase_done:
+            if len(seq_vals) < self._probe_repeats:
+                self._probe_rank_before[step] = observation.target_rank
+                self._probe_type_by_step[step] = "sequential"
+                assignments = self._make_inactive(step, agent_ids)
+                probe_agent = agent_ids[step % len(agent_ids)]
+                assignments[probe_agent] = RoleAssignment(
+                    step=step,
+                    agent_id=probe_agent,
+                    role=AgentRole.DIAGNOSTIC,
+                    rationale=(
+                        "Probe: rating genre-consistent fillers first then target last to test "
+                        "whether recency ordering gives extra lift (Sequential) vs flat gain (MF)."
+                    ),
+                    metadata={"diagnostic_type": "sequential"},
+                )
+                return assignments
+            if len(seq_vals) >= self._probe_repeats:
+                direct_avg = _avg(direct_vals)
+                seq_avg = _avg(seq_vals)
+                if (
+                    seq_avg > direct_avg * 1.3
+                    and seq_avg > 0
+                    and _consensus(seq_vals, want_positive=True)
+                ):
+                    self.victim_model_class = VictimModelClass.SEQUENTIAL_STYLE
+                else:
+                    self.victim_model_class = VictimModelClass.MF_STYLE
+                self._probe_phase_done = True
+                return None
 
         # Probe steps exhausted without classification — default to MF.
         if not self._probe_phase_done:

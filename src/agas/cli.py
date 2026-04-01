@@ -27,7 +27,7 @@ except ImportError:  # agas.data is optional (only needed for preprocess command
     preprocess_all = None  # type: ignore[assignment]
 from agas.llm.providers import build_llm_client
 from agas.recsys.surrogate import LightweightSurrogateRecommender, SurrogateConfig
-from agas.recsys.targets import LightGCNRecommender, NeuMFRecommender, TargetModelConfig
+from agas.recsys.targets import LightGCNRecommender, NeuMFRecommender, SequentialRecommender, TargetModelConfig
 from agas.simulation.environment import AGASEnvironment, DefenseConfig
 from agas.agents.defender import DefenseMonitorConfig
 from agas.simulation.episode import AGASEpisodeRunner, EpisodeConfig, default_agent_ids
@@ -212,6 +212,9 @@ def _build_coordinator_and_workers(
         runtime_config=runtime_config,
         probe_steps=int(getattr(args, "probe_steps", 2)),
         victim_model_hint=str(getattr(args, "victim_model_hint", "auto")),
+        probe_repeats=int(getattr(args, "probe_repeats", 1)),
+        probe_use_graph=bool(getattr(args, "probe_use_graph", False)),
+        probe_consensus=bool(getattr(args, "probe_consensus", False)),
     )
     worker_policy_name = args.worker_policy
     worker_llm_client = None
@@ -254,7 +257,7 @@ def _parse_target_models(raw: str) -> list[str]:
         name = token.strip().lower()
         if not name:
             continue
-        if name not in {"neumf", "lightgcn"}:
+        if name not in {"neumf", "lightgcn", "sequential"}:
             raise ValueError(f"Unsupported target model: {name}")
         out.append(name)
     if not out:
@@ -288,6 +291,8 @@ def _build_target_model(name: str, config: TargetModelConfig):
         return NeuMFRecommender(config=config)
     if name == "lightgcn":
         return LightGCNRecommender(config=config)
+    if name == "sequential":
+        return SequentialRecommender(config=config)
     raise ValueError(f"Unsupported target model: {name}")
 
 
@@ -673,16 +678,6 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         max_interactions=_parse_optional_int(args.max_interactions),
     )
 
-    episode_model = "surrogate"
-    if mode in {"both", "option-a"}:
-        episode_model = str(getattr(args, "episode_model", "surrogate")).strip().lower()
-    episode_recommender = _build_episode_recommender(
-        episode_model,
-        interactions,
-        items,
-        n_factors=args.n_factors,
-        target_config=target_config,
-    )
     # Many evaluation protocols assume a fixed item catalog. If the target item is not in the
     # clean catalog, "promotion" deltas are dominated by catalog inclusion (cold-start) artifacts.
     catalog_item_ids = set(items["item_id"].astype(str).drop_duplicates().tolist()) if items is not None else set()
@@ -693,65 +688,80 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
             "(treating this as a cold-start/inclusion setting rather than pure rank promotion)."
         )
 
-    base_env = AGASEnvironment(
-        recommender=episode_recommender,
-        base_interactions=interactions,
-        items=items,
-        target_item_id=target_item_id,
-        target_keyword=args.target_keyword,
-        defense_config=DefenseConfig(
-            black_box_mode=not args.expose_defense_state,
-            spike_threshold=args.spike_threshold,
-            lockdown_drop_prob=args.lockdown_drop_prob,
-            monitor_config=DefenseMonitorConfig(
-                group_overlap_threshold=args.group_overlap_threshold,
-                group_target_required=args.group_target_required,
-                group_weight=args.group_weight,
-            ),
-            quarantine_steps=int(args.quarantine_steps),
-            quarantine_on_spike_alert=bool(args.quarantine_on_spike_alert),
-            quarantine_on_group_collusion=bool(args.quarantine_on_group_collusion),
-        ),
-        seed=args.seed,
-    )
-    # Candidate set affects the absolute rank a lot. For reproducible offline transfer reporting
-    # we support freezing it rather than inheriting the surrogate's cluster (which can drift).
-    if args.transfer_candidate_set == "all_items":
-        candidate_items = items["item_id"].astype(str).drop_duplicates().tolist()
-    else:
-        candidate_items = list(base_env.target_cluster_item_ids)
-    if target_item_id not in candidate_items:
-        candidate_items.append(target_item_id)
-    if args.transfer_candidate_set == "all_items" and len(candidate_items) > 5000:
-        print(
-            f"NOTE: 'all_items' candidate set has {len(candidate_items)} items. "
-            "Absolute rank numbers will be large; compare using normalized_rank_delta in the output."
-        )
-    segment_user_ids = base_env.segment_user_ids
-
     prompt_store = PromptStore(Path(args.prompt_root))
-
-    # RC1+RC2 fix: reuse real segment users as attack agents so they already have
-    # embeddings and graph edges in the target models trained on clean data.
-    if getattr(args, "use_segment_users_as_agents", False):
-        if len(segment_user_ids) < args.num_agents:
-            raise RuntimeError(
-                f"Not enough segment users ({len(segment_user_ids)}) to fill "
-                f"{args.num_agents} agent slots. Lower --num-agents or disable "
-                "--use-segment-users-as-agents."
-            )
-        agent_ids = list(segment_user_ids[:args.num_agents])
-    else:
-        agent_ids = default_agent_ids(args.num_agents)
 
     # RC4 fix: restrict which roles contribute interactions to target model training.
     _raw_roles = str(getattr(args, "transfer_attack_roles", "all")).strip().lower()
     attack_roles: set[str] | None = None if _raw_roles == "all" else {r.strip() for r in _raw_roles.split(",")}
 
+    def _build_env_and_candidate(episode_model_name: str, candidate_set: str):
+        episode_recommender = _build_episode_recommender(
+            episode_model_name,
+            interactions,
+            items,
+            n_factors=args.n_factors,
+            target_config=target_config,
+        )
+        env = AGASEnvironment(
+            recommender=episode_recommender,
+            base_interactions=interactions,
+            items=items,
+            target_item_id=target_item_id,
+            target_keyword=args.target_keyword,
+            defense_config=DefenseConfig(
+                black_box_mode=not args.expose_defense_state,
+                spike_threshold=args.spike_threshold,
+                lockdown_drop_prob=args.lockdown_drop_prob,
+                monitor_config=DefenseMonitorConfig(
+                    group_overlap_threshold=args.group_overlap_threshold,
+                    group_target_required=args.group_target_required,
+                    group_weight=args.group_weight,
+                ),
+                quarantine_steps=int(args.quarantine_steps),
+                quarantine_on_spike_alert=bool(args.quarantine_on_spike_alert),
+                quarantine_on_group_collusion=bool(args.quarantine_on_group_collusion),
+            ),
+            seed=args.seed,
+        )
+        if candidate_set == "all_items":
+            candidate_items = items["item_id"].astype(str).drop_duplicates().tolist()
+        else:
+            candidate_items = list(env.target_cluster_item_ids)
+        if target_item_id not in candidate_items:
+            candidate_items.append(target_item_id)
+        if candidate_set == "all_items" and len(candidate_items) > 5000:
+            print(
+                f"NOTE: 'all_items' candidate set has {len(candidate_items)} items. "
+                "Absolute rank numbers will be large; compare using normalized_rank_delta in the output."
+            )
+        return env, candidate_items, env.segment_user_ids
+
+    split_by_target = bool(getattr(args, "transfer_split_by_target_model", False))
+
     surrogate_result = None
     attack_rows = pd.DataFrame(columns=["user_id", "item_id", "rating"])
     attack_stats = None
-    if mode in {"both", "option-a"}:
+    episode_histories_by_target: dict[str, list[dict]] | None = None
+    per_target_settings: dict[str, dict] | None = None
+    if mode in {"both", "option-a"} and not split_by_target:
+        episode_model = str(getattr(args, "episode_model", "surrogate")).strip().lower()
+        base_env, candidate_items, segment_user_ids = _build_env_and_candidate(
+            episode_model, args.transfer_candidate_set
+        )
+
+        # RC1+RC2 fix: reuse real segment users as attack agents so they already have
+        # embeddings and graph edges in the target models trained on clean data.
+        if getattr(args, "use_segment_users_as_agents", False):
+            if len(segment_user_ids) < args.num_agents:
+                raise RuntimeError(
+                    f"Not enough segment users ({len(segment_user_ids)}) to fill "
+                    f"{args.num_agents} agent slots. Lower --num-agents or disable "
+                    "--use-segment-users-as-agents."
+                )
+            agent_ids = list(segment_user_ids[:args.num_agents])
+        else:
+            agent_ids = default_agent_ids(args.num_agents)
+
         coordinator, workers = _build_coordinator_and_workers(
             args=args,
             agent_ids=agent_ids,
@@ -777,40 +787,147 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
 
     option_a_results: dict[str, dict] = {}
     if mode in {"both", "option-a"}:
-        if len(attack_rows):
-            combined = pd.concat([interactions, attack_rows], ignore_index=True)
-            # RC3 fix: deduplicate (user_id, item_id) pairs keeping the attack rating,
-            # which matters when segment users are used as agents and already rated
-            # some items in the clean data.
-            combined = combined.drop_duplicates(subset=["user_id", "item_id"], keep="last")
+        if not split_by_target:
+            if len(attack_rows):
+                combined = pd.concat([interactions, attack_rows], ignore_index=True)
+                # RC3 fix: deduplicate (user_id, item_id) pairs keeping the attack rating,
+                # which matters when segment users are used as agents and already rated
+                # some items in the clean data.
+                combined = combined.drop_duplicates(subset=["user_id", "item_id"], keep="last")
+            else:
+                combined = interactions
+            for name in target_models:
+                clean_model = _build_target_model(name, target_config)
+                clean_model.fit(interactions, items=items)
+                initial_rank, initial_total = clean_model.rank_item(
+                    item_id=target_item_id,
+                    segment_user_ids=segment_user_ids,
+                    candidate_items=candidate_items,
+                )
+                attacked_model = _build_target_model(name, target_config)
+                attacked_model.fit(combined, items=items)
+                final_rank, final_total = attacked_model.rank_item(
+                    item_id=target_item_id,
+                    segment_user_ids=segment_user_ids,
+                    candidate_items=candidate_items,
+                )
+                option_a_results[name] = {
+                    "initial_rank": int(initial_rank),
+                    "initial_total_candidates": int(initial_total),
+                    "final_rank": int(final_rank),
+                    "final_total_candidates": int(final_total),
+                    "rank_delta": int(initial_rank) - int(final_rank),
+                    "normalized_rank_before": round(initial_rank / initial_total, 4) if initial_total else None,
+                    "normalized_rank_after": round(final_rank / final_total, 4) if final_total else None,
+                    "normalized_rank_delta": round((initial_rank - final_rank) / initial_total, 4) if initial_total else None,
+                    "attack_interactions": int(len(attack_rows)),
+                }
         else:
-            combined = interactions
-        for name in target_models:
-            clean_model = _build_target_model(name, target_config)
-            clean_model.fit(interactions, items=items)
-            initial_rank, initial_total = clean_model.rank_item(
-                item_id=target_item_id,
-                segment_user_ids=segment_user_ids,
-                candidate_items=candidate_items,
-            )
-            attacked_model = _build_target_model(name, target_config)
-            attacked_model.fit(combined, items=items)
-            final_rank, final_total = attacked_model.rank_item(
-                item_id=target_item_id,
-                segment_user_ids=segment_user_ids,
-                candidate_items=candidate_items,
-            )
-            option_a_results[name] = {
-                "initial_rank": int(initial_rank),
-                "initial_total_candidates": int(initial_total),
-                "final_rank": int(final_rank),
-                "final_total_candidates": int(final_total),
-                "rank_delta": int(initial_rank) - int(final_rank),
-                "normalized_rank_before": round(initial_rank / initial_total, 4) if initial_total else None,
-                "normalized_rank_after": round(final_rank / final_total, 4) if final_total else None,
-                "normalized_rank_delta": round((initial_rank - final_rank) / initial_total, 4) if initial_total else None,
-                "attack_interactions": int(len(attack_rows)),
-            }
+            episode_histories_by_target = {}
+            per_target_settings = {}
+            for name in target_models:
+                # Per-target overrides: LightGCN gets real users + direct target edges + more snipers.
+                use_segment_users = bool(getattr(args, "use_segment_users_as_agents", False))
+                episode_model = str(getattr(args, "episode_model", "surrogate")).strip().lower()
+                victim_hint = str(getattr(args, "victim_model_hint", "auto")).strip().lower()
+                probe_steps = int(getattr(args, "probe_steps", 2))
+                rule_max_snipers = int(getattr(args, "rule_max_snipers", 1))
+                candidate_set = str(getattr(args, "transfer_candidate_set", "cluster"))
+
+                if name == "lightgcn":
+                    use_segment_users = True
+                    episode_model = "lightgcn"
+                    victim_hint = "mf"
+                    probe_steps = 0
+                    rule_max_snipers = max(rule_max_snipers, 3)
+                    candidate_set = "all_items"
+
+                per_target_settings[name] = {
+                    "episode_model": episode_model,
+                    "victim_model_hint": victim_hint,
+                    "probe_steps": probe_steps,
+                    "use_segment_users_as_agents": use_segment_users,
+                    "rule_max_snipers": rule_max_snipers,
+                    "transfer_candidate_set": candidate_set,
+                }
+
+                base_env, candidate_items, segment_user_ids = _build_env_and_candidate(
+                    episode_model, candidate_set
+                )
+
+                if use_segment_users:
+                    if len(segment_user_ids) < args.num_agents:
+                        raise RuntimeError(
+                            f"Not enough segment users ({len(segment_user_ids)}) to fill "
+                            f"{args.num_agents} agent slots for target model {name}. "
+                            "Lower --num-agents or disable --transfer-split-by-target-model."
+                        )
+                    agent_ids = list(segment_user_ids[:args.num_agents])
+                else:
+                    agent_ids = default_agent_ids(args.num_agents)
+
+                # Clone args for per-target overrides
+                args_local = argparse.Namespace(**vars(args))
+                args_local.episode_model = episode_model
+                args_local.victim_model_hint = victim_hint
+                args_local.probe_steps = probe_steps
+                args_local.use_segment_users_as_agents = use_segment_users
+                args_local.rule_max_snipers = rule_max_snipers
+                args_local.transfer_candidate_set = candidate_set
+
+                coordinator, workers = _build_coordinator_and_workers(
+                    args=args_local,
+                    agent_ids=agent_ids,
+                    prompt_store=prompt_store,
+                    total_steps=args.num_steps,
+                )
+                runner = AGASEpisodeRunner(
+                    coordinator=coordinator,
+                    environment=base_env,
+                    workers=workers,
+                    config=EpisodeConfig(
+                        num_steps=args.num_steps,
+                        num_workers=args.num_agents,
+                        goal_rank=args.goal_rank,
+                        stop_on_goal=args.stop_on_goal,
+                        trajectory_window=args.trajectory_window,
+                        coordinator_agent_memory=bool(args.coordinator_agent_memory),
+                    ),
+                )
+                result = runner.run()
+                episode_histories_by_target[name] = result.history
+                attack_rows_local = _extract_attack_interactions(result.history, roles=attack_roles)
+                if len(attack_rows_local):
+                    combined = pd.concat([interactions, attack_rows_local], ignore_index=True)
+                    combined = combined.drop_duplicates(subset=["user_id", "item_id"], keep="last")
+                else:
+                    combined = interactions
+
+                clean_model = _build_target_model(name, target_config)
+                clean_model.fit(interactions, items=items)
+                initial_rank, initial_total = clean_model.rank_item(
+                    item_id=target_item_id,
+                    segment_user_ids=segment_user_ids,
+                    candidate_items=candidate_items,
+                )
+                attacked_model = _build_target_model(name, target_config)
+                attacked_model.fit(combined, items=items)
+                final_rank, final_total = attacked_model.rank_item(
+                    item_id=target_item_id,
+                    segment_user_ids=segment_user_ids,
+                    candidate_items=candidate_items,
+                )
+                option_a_results[name] = {
+                    "initial_rank": int(initial_rank),
+                    "initial_total_candidates": int(initial_total),
+                    "final_rank": int(final_rank),
+                    "final_total_candidates": int(final_total),
+                    "rank_delta": int(initial_rank) - int(final_rank),
+                    "normalized_rank_before": round(initial_rank / initial_total, 4) if initial_total else None,
+                    "normalized_rank_after": round(final_rank / final_total, 4) if final_total else None,
+                    "normalized_rank_delta": round((initial_rank - final_rank) / initial_total, 4) if initial_total else None,
+                    "attack_interactions": int(len(attack_rows_local)),
+                }
 
     option_b_results: dict[str, dict] = {}
     if mode in {"both", "option-b"}:
@@ -912,6 +1029,8 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "option_a": option_a_results if option_a_results else None,
         "option_b": option_b_results if option_b_results else None,
         "surrogate_episode_history": surrogate_result.history if surrogate_result is not None else None,
+        "episode_histories_by_target": episode_histories_by_target,
+        "per_target_transfer_settings": per_target_settings,
         "attack_interactions_stats": attack_stats,
     }
 
@@ -1198,6 +1317,24 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_transfer.add_argument(
+        "--probe-repeats",
+        type=int,
+        default=1,
+        help="Repeat each probe type this many times and use the average delta (default: 1).",
+    )
+    p_transfer.add_argument(
+        "--probe-use-graph",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Enable graph-diffusion probe (cluster-neighbour ratings) to detect LightGCN-style victims.",
+    )
+    p_transfer.add_argument(
+        "--probe-consensus",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Require majority-consensus over repeated probes before classifying the victim model.",
+    )
+    p_transfer.add_argument(
         "--lightgcn-budget",
         choices=["small", "large"],
         default="small",
@@ -1211,12 +1348,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_transfer.add_argument(
         "--episode-model",
-        choices=["surrogate", "lightgcn", "neumf"],
+        choices=["surrogate", "lightgcn", "neumf", "sequential"],
         default="surrogate",
         help=(
             "Recommender used during the episode loop that generates attack interactions for Option A. "
             "Default 'surrogate' uses the lightweight SVD-based surrogate. "
-            "Set to 'lightgcn' or 'neumf' to run the episode loop on that target-model family, then "
+            "Set to 'lightgcn', 'neumf', or 'sequential' to run the episode loop on that target-model family, then "
             "still evaluate offline transfer to --target-models afterward."
         ),
     )
@@ -1228,6 +1365,16 @@ def build_parser() -> argparse.ArgumentParser:
             "Candidate set used when reporting ranks in transfer evaluation. "
             "'cluster' uses the surrogate-derived target cluster (can drift between runs). "
             "'all_items' uses all item IDs from processed items.csv (more stable)."
+        ),
+    )
+    p_transfer.add_argument(
+        "--transfer-split-by-target-model",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Run separate episode-generation passes per target model with per-model attack recipes. "
+            "LightGCN uses real users + direct target edges (MF-style) + more snipers + all_items "
+            "candidate set; NeuMF uses the standard settings. Outputs per-target histories and settings."
         ),
     )
     p_transfer.add_argument(

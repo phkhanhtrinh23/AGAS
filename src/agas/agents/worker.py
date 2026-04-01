@@ -318,6 +318,7 @@ class WorkerAgent:
 
         ``"direct"``     – rate target at 5.0 only; measures direct-signal effect.
         ``"sequential"`` – rate fillers first, target last; measures recency effect.
+        ``"graph"``      – rate cluster neighbours at 5.0; measures diffusion effect.
 
         Args:
             ctx: Environment-provided item pools used by role policies.
@@ -355,6 +356,23 @@ class WorkerAgent:
                     ),
                 )
             )
+            return out
+
+        if dtype == "graph":
+            neighbor_pool = [i for i in ctx.target_cluster_items if str(i) != str(ctx.target_item_id)]
+            out: List[RatingAction] = []
+            for item_id in self._sample_items(neighbor_pool, self.config.graph_sniper_neighbor_actions):
+                out.append(
+                    RatingAction(
+                        agent_id=self.state.agent_id,
+                        item_id=item_id,
+                        rating=5.0,
+                        reason=(
+                            "Diagnostic graph probe: rate cluster neighbours at 5.0 to test "
+                            "whether graph diffusion lifts the target without direct edges."
+                        ),
+                    )
+                )
             return out
 
         # Default: direct probe.
