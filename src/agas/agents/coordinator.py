@@ -106,6 +106,9 @@ class CoordinatorRuntimeConfig:
     sniper_lock_suppression_streak: int = 2
     sniper_lock_memory_events: int = 2
     sniper_lock_role: AgentRole = AgentRole.INACTIVE
+    # When transfer uses sniper-only extraction, force direct-target sniper even
+    # if the victim is classified as LightGCN so the injected set has target positives.
+    transfer_sniper_direct_target: bool = False
 
 
 @dataclass
@@ -804,7 +807,16 @@ class Coordinator:
                 annotated[aid] = a
                 continue
             meta = dict(a.metadata)
-            meta["victim_model_class"] = self.victim_model_class.value
+            victim_class = self.victim_model_class
+            if (
+                a.role == AgentRole.SNIPER
+                and self.runtime_config.transfer_sniper_direct_target
+                and self.victim_model_class == VictimModelClass.LIGHTGCN_STYLE
+            ):
+                # Override LightGCN-style sniper to MF-style direct target when
+                # transfer needs target-positive injections.
+                victim_class = VictimModelClass.MF_STYLE
+            meta["victim_model_class"] = victim_class.value
             annotated[aid] = RoleAssignment(
                 step=a.step,
                 agent_id=a.agent_id,

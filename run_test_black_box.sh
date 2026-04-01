@@ -110,18 +110,24 @@ set -euo pipefail
 #   --output outputs/experiments/expB_mf_yours.json
 
 PYTHONPATH=src python -m agas.cli run-transfer \
-  --victim-model-hint mf \
-  --probe-steps 0 \
-  --target-models neumf,lightgcn \
-  --num-agents 4 --num-steps 8 \
-  --target-keyword horror \
-  --coordinator-policy rule --worker-policy rule \
-  --transfer-attack-roles sniper \
   --transfer-mode option-a \
-  --max-interactions 10000 \
   --processed-root processed \
   --dataset ml-latest-small \
+  --max-interactions 10000 \
   --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --use-segment-users-as-agents \
+  --rule-max-snipers 3 \
+  --target-models lightgcn \
   --transfer-candidate-set cluster \
-  --output outputs/experiments/expB_mf_yours.json
+  --output outputs/experiments/expE_reproduce_lgcn_direct_realusers_snipers3_cluster.json
+
 

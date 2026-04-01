@@ -145,10 +145,23 @@ def _build_coordinator_and_workers(
         Tuple ``(coordinator, workers)``.
     """
 
+    max_snipers = int(getattr(args, "rule_max_snipers", 1))
+    if getattr(args, "command", "") == "run-transfer":
+        raw_roles = str(getattr(args, "transfer_attack_roles", "all")).strip().lower()
+        if raw_roles != "all":
+            roles = {r.strip() for r in raw_roles.split(",") if r.strip()}
+            if roles.issubset({"sniper", "diagnostic"}) and "sniper" in roles and max_snipers <= 1:
+                # Heuristic: boost snipers when transfer keeps only sniper/diagnostic rows.
+                max_snipers = max(1, min(3, int(getattr(args, "num_agents", 1))))
+        # Keep args in sync for output logging.
+        try:
+            args.rule_max_snipers = max_snipers
+        except Exception:
+            pass
     if args.coordinator_policy == "rule":
         policy = RuleBasedCoordinatorPolicy(
             agent_order=agent_ids,
-            max_snipers=int(getattr(args, "rule_max_snipers", 1)),
+            max_snipers=max_snipers,
         )
     else:
         if args.coordinator_policy == "openai":
@@ -184,7 +197,16 @@ def _build_coordinator_and_workers(
         sniper_lock_suppression_streak=args.sniper_lock_suppression_streak,
         sniper_lock_memory_events=args.sniper_lock_memory_events,
         sniper_lock_role=lock_role,
+        transfer_sniper_direct_target=False,
     )
+    # If transfer extraction keeps only sniper (and optionally diagnostic) rows,
+    # force direct-target snipers so the injected set contains target positives.
+    if getattr(args, "command", "") == "run-transfer":
+        raw_roles = str(getattr(args, "transfer_attack_roles", "all")).strip().lower()
+        if raw_roles != "all":
+            roles = {r.strip() for r in raw_roles.split(",") if r.strip()}
+            if roles.issubset({"sniper", "diagnostic"}) and "sniper" in roles:
+                runtime_config.transfer_sniper_direct_target = True
     coordinator = Coordinator(
         policy=policy,
         runtime_config=runtime_config,
