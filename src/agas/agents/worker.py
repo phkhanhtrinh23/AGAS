@@ -418,11 +418,16 @@ class WorkerAgent:
         """Deliver the sniper payload, dispatching to the correct variant.
 
         Variant priority:
-        1. ``assignment.metadata["victim_model_class"]`` set by Coordinator after
-           probe-phase classification.
-        2. ``self.config.graph_sniper`` legacy flag.
-        3. ``self.config.sequential_sniper`` legacy flag.
-        4. Default MF-style direct sniper.
+        1. ``self.config.graph_sniper`` explicit flag → graph-sniper (online LightGCN only).
+        2. ``assignment.metadata["victim_model_class"] == sequential_style`` → sequential sniper.
+        3. ``self.config.sequential_sniper`` legacy flag → sequential sniper.
+        4. Everything else (including lightgcn_style) → MF-style direct target rating.
+
+        Note: LightGCN-style classification does NOT automatically trigger graph-sniper.
+        For offline transfer attacks the victim model is retrained from scratch, so a
+        direct 5.0 target rating is the most effective payload regardless of architecture.
+        Graph-sniper must be explicitly enabled via ``--graph-sniper`` and is only
+        appropriate for pure online-injection attacks against a live LightGCN model.
 
         Args:
             ctx: Environment-provided item pools used by role policies.
@@ -436,7 +441,8 @@ class WorkerAgent:
             ((assignment.metadata if assignment else None) or {}).get("victim_model_class", "")
         ).lower()
 
-        if victim_class == "lightgcn_style" or self.config.graph_sniper:
+        # Graph-sniper only when explicitly requested via config flag.
+        if self.config.graph_sniper:
             return self._act_graph_sniper(ctx)
 
         if victim_class == "sequential_style" or self.config.sequential_sniper:
