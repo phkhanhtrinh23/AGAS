@@ -208,6 +208,7 @@ def _build_coordinator_and_workers(
         positive_threshold=float(getattr(args, "target_positive_threshold", 4.0)),
         graph_sniper=_graph_sniper,
         graph_sniper_neighbor_actions=int(getattr(args, "graph_sniper_neighbor_actions", 3)),
+        graph_sniper_include_target=bool(getattr(args, "graph_sniper_include_target", True)),
         lightgcn_budget=str(getattr(args, "lightgcn_budget", "small")).lower(),
     )
     workers = build_worker_pool(
@@ -1136,6 +1137,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=3,
         help="Number of cluster-neighbour items each sniper rates in --graph-sniper mode (default: 3).",
+    )
+    p_transfer.add_argument(
+        "--graph-sniper-include-target",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "When graph-sniper mode is active, append a direct 5.0 rating on the target item as "
+            "the last sniper action. Default True because offline transfer attacks retrain the "
+            "victim from scratch — degree normalisation adapts, so a direct target positive is "
+            "beneficial and ensures --transfer-attack-roles sniper produces at least one target "
+            "positive. Set --no-graph-sniper-include-target only for pure online-injection attacks "
+            "where the LightGCN model is never retrained."
+        ),
     )
     p_transfer.add_argument(
         "--victim-model-hint",

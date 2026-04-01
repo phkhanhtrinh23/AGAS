@@ -52,6 +52,12 @@ class WorkerPolicyConfig:
     # their edge weights, pushing them lower in the ranking.
     graph_sniper: bool = False
     graph_sniper_neighbor_actions: int = 3
+    # For offline transfer attacks, the victim model is retrained from scratch on the
+    # augmented dataset — degree normalisation adapts to the new edges, so adding a
+    # direct 5.0 target rating at the end of the graph-sniper payload still helps.
+    # Set to False only for pure online-injection attacks where the LightGCN model is
+    # never retrained and degree normalisation would penalise the direct edge.
+    graph_sniper_include_target: bool = True
     # Sequential-sniper mode: for recency-aware models (SASRec, GRU4Rec, BERT4Rec).
     # Rates genre-consistent filler items first to build interaction history, then
     # rates the target item last so the next-item prediction bias fires on the target.
@@ -516,6 +522,23 @@ class WorkerAgent:
                     reason=(
                         "Graph-sniper: rating competitor at 5.0 to inflate its degree "
                         "and reduce the weight of its existing edges via normalisation."
+                    ),
+                )
+            )
+
+        # For offline transfer attacks the victim model is retrained from scratch, so
+        # degree normalisation adapts to the new edges.  Adding the target at 5.0 last
+        # ensures the transfer training set always contains at least one target positive.
+        # Disable via graph_sniper_include_target=False for pure online-injection attacks.
+        if self.config.graph_sniper_include_target:
+            out.append(
+                RatingAction(
+                    agent_id=self.state.agent_id,
+                    item_id=ctx.target_item_id,
+                    rating=5.0,
+                    reason=(
+                        "Graph-sniper: direct target 5.0 appended last to guarantee a "
+                        "positive training edge for offline transfer retraining."
                     ),
                 )
             )
