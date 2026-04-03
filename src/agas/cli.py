@@ -7,8 +7,9 @@ import json
 import os
 import pickle
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
+import numpy as np
 import pandas as pd
 
 from agas.agents.coordinator import (
@@ -357,6 +358,42 @@ def _extract_attack_interactions(history: list[dict], roles: set[str] | None = N
     if not rows:
         return pd.DataFrame(columns=["user_id", "item_id", "rating"])
     return pd.DataFrame(rows)
+
+
+def _clone_segment_profiles_for_agents(
+    interactions: pd.DataFrame,
+    agent_ids: Sequence[str],
+    segment_user_ids: Sequence[str],
+    *,
+    seed: int,
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    """Clone real-user profiles onto fake agent IDs for offline training.
+
+    Returns cloned interaction rows and a mapping of fake_agent_id -> source_user_id.
+    """
+
+    if len(segment_user_ids) < len(agent_ids):
+        raise RuntimeError(
+            f"Not enough segment users ({len(segment_user_ids)}) to clone profiles for "
+            f"{len(agent_ids)} agents. Lower --num-agents or disable --clone-segment-users-to-agents."
+        )
+    rng = np.random.default_rng(seed)
+    src_users = list(segment_user_ids)
+    rng.shuffle(src_users)
+    mapping = dict(zip(agent_ids, src_users[: len(agent_ids)]))
+
+    frames: list[pd.DataFrame] = []
+    user_col = interactions["user_id"].astype(str)
+    for agent_id, src_user in mapping.items():
+        src_mask = user_col == str(src_user)
+        if not src_mask.any():
+            continue
+        clone = interactions[src_mask].copy()
+        clone["user_id"] = str(agent_id)
+        frames.append(clone)
+    if not frames:
+        return pd.DataFrame(columns=["user_id", "item_id", "rating"]), mapping
+    return pd.concat(frames, ignore_index=True), mapping
 
 
 def _attack_outcome_stats(history: list[dict], positive_threshold: float) -> dict:
@@ -741,6 +778,9 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
     surrogate_result = None
     attack_rows = pd.DataFrame(columns=["user_id", "item_id", "rating"])
     attack_stats = None
+    cloned_rows = pd.DataFrame(columns=["user_id", "item_id", "rating"])
+    clone_mapping: dict[str, str] = {}
+    clone_profiles = bool(getattr(args, "clone_segment_users_to_agents", False))
     episode_histories_by_target: dict[str, list[dict]] | None = None
     per_target_settings: dict[str, dict] | None = None
     if mode in {"both", "option-a"} and not split_by_target:
@@ -751,7 +791,8 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
 
         # RC1+RC2 fix: reuse real segment users as attack agents so they already have
         # embeddings and graph edges in the target models trained on clean data.
-        if getattr(args, "use_segment_users_as_agents", False):
+        use_segment_users = bool(getattr(args, "use_segment_users_as_agents", False))
+        if use_segment_users:
             if len(segment_user_ids) < args.num_agents:
                 raise RuntimeError(
                     f"Not enough segment users ({len(segment_user_ids)}) to fill "
@@ -761,6 +802,13 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
             agent_ids = list(segment_user_ids[:args.num_agents])
         else:
             agent_ids = default_agent_ids(args.num_agents)
+            if clone_profiles:
+                cloned_rows, clone_mapping = _clone_segment_profiles_for_agents(
+                    interactions,
+                    agent_ids,
+                    segment_user_ids,
+                    seed=args.seed,
+                )
 
         coordinator, workers = _build_coordinator_and_workers(
             args=args,
@@ -788,17 +836,20 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
     option_a_results: dict[str, dict] = {}
     if mode in {"both", "option-a"}:
         if not split_by_target:
+            base_training = interactions
+            if len(cloned_rows):
+                base_training = pd.concat([base_training, cloned_rows], ignore_index=True)
             if len(attack_rows):
-                combined = pd.concat([interactions, attack_rows], ignore_index=True)
+                combined = pd.concat([base_training, attack_rows], ignore_index=True)
                 # RC3 fix: deduplicate (user_id, item_id) pairs keeping the attack rating,
                 # which matters when segment users are used as agents and already rated
                 # some items in the clean data.
                 combined = combined.drop_duplicates(subset=["user_id", "item_id"], keep="last")
             else:
-                combined = interactions
+                combined = base_training
             for name in target_models:
                 clean_model = _build_target_model(name, target_config)
-                clean_model.fit(interactions, items=items)
+                clean_model.fit(base_training, items=items)
                 initial_rank, initial_total = clean_model.rank_item(
                     item_id=target_item_id,
                     segment_user_ids=segment_user_ids,
@@ -821,6 +872,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     "normalized_rank_after": round(final_rank / final_total, 4) if final_total else None,
                     "normalized_rank_delta": round((initial_rank - final_rank) / initial_total, 4) if initial_total else None,
                     "attack_interactions": int(len(attack_rows)),
+                    "cloned_profile_rows": int(len(cloned_rows)),
                 }
         else:
             episode_histories_by_target = {}
@@ -828,6 +880,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
             for name in target_models:
                 # Per-target overrides: LightGCN gets real users + direct target edges + more snipers.
                 use_segment_users = bool(getattr(args, "use_segment_users_as_agents", False))
+                clone_profiles = bool(getattr(args, "clone_segment_users_to_agents", False))
                 episode_model = str(getattr(args, "episode_model", "surrogate")).strip().lower()
                 victim_hint = str(getattr(args, "victim_model_hint", "auto")).strip().lower()
                 probe_steps = int(getattr(args, "probe_steps", 2))
@@ -835,7 +888,10 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 candidate_set = str(getattr(args, "transfer_candidate_set", "cluster"))
 
                 if name == "lightgcn":
-                    use_segment_users = True
+                    if clone_profiles:
+                        use_segment_users = False
+                    else:
+                        use_segment_users = True
                     episode_model = "lightgcn"
                     victim_hint = "mf"
                     probe_steps = 0
@@ -847,6 +903,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     "victim_model_hint": victim_hint,
                     "probe_steps": probe_steps,
                     "use_segment_users_as_agents": use_segment_users,
+                    "clone_segment_users_to_agents": clone_profiles,
                     "rule_max_snipers": rule_max_snipers,
                     "transfer_candidate_set": candidate_set,
                 }
@@ -854,6 +911,9 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 base_env, candidate_items, segment_user_ids = _build_env_and_candidate(
                     episode_model, candidate_set
                 )
+
+                cloned_rows_local = pd.DataFrame(columns=["user_id", "item_id", "rating"])
+                clone_mapping_local: dict[str, str] = {}
 
                 if use_segment_users:
                     if len(segment_user_ids) < args.num_agents:
@@ -865,6 +925,13 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     agent_ids = list(segment_user_ids[:args.num_agents])
                 else:
                     agent_ids = default_agent_ids(args.num_agents)
+                    if clone_profiles:
+                        cloned_rows_local, clone_mapping_local = _clone_segment_profiles_for_agents(
+                            interactions,
+                            agent_ids,
+                            segment_user_ids,
+                            seed=args.seed,
+                        )
 
                 # Clone args for per-target overrides
                 args_local = argparse.Namespace(**vars(args))
@@ -897,14 +964,17 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 result = runner.run()
                 episode_histories_by_target[name] = result.history
                 attack_rows_local = _extract_attack_interactions(result.history, roles=attack_roles)
+                base_training = interactions
+                if len(cloned_rows_local):
+                    base_training = pd.concat([base_training, cloned_rows_local], ignore_index=True)
                 if len(attack_rows_local):
-                    combined = pd.concat([interactions, attack_rows_local], ignore_index=True)
+                    combined = pd.concat([base_training, attack_rows_local], ignore_index=True)
                     combined = combined.drop_duplicates(subset=["user_id", "item_id"], keep="last")
                 else:
-                    combined = interactions
+                    combined = base_training
 
                 clean_model = _build_target_model(name, target_config)
-                clean_model.fit(interactions, items=items)
+                clean_model.fit(base_training, items=items)
                 initial_rank, initial_total = clean_model.rank_item(
                     item_id=target_item_id,
                     segment_user_ids=segment_user_ids,
@@ -927,6 +997,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     "normalized_rank_after": round(final_rank / final_total, 4) if final_total else None,
                     "normalized_rank_delta": round((initial_rank - final_rank) / initial_total, 4) if initial_total else None,
                     "attack_interactions": int(len(attack_rows_local)),
+                    "cloned_profile_rows": int(len(cloned_rows_local)),
                 }
 
     option_b_results: dict[str, dict] = {}
@@ -1025,6 +1096,9 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "target_device": str(target_config.device),
         "target_lightgcn_layers": int(target_config.lightgcn_layers),
         "use_segment_users_as_agents": bool(getattr(args, "use_segment_users_as_agents", False)),
+        "clone_segment_users_to_agents": bool(getattr(args, "clone_segment_users_to_agents", False)),
+        "clone_profile_mapping": clone_mapping or None,
+        "cloned_profile_rows": int(len(cloned_rows)),
         "transfer_attack_roles": str(getattr(args, "transfer_attack_roles", "all")),
         "option_a": option_a_results if option_a_results else None,
         "option_b": option_b_results if option_b_results else None,
@@ -1432,6 +1506,16 @@ def build_parser() -> argparse.ArgumentParser:
             "instead of creating fresh fake agent_N accounts. This fixes the cold-start isolation "
             "problem: segment users already have embeddings and graph edges in the target models, "
             "so adding item-1215 to their history directly promotes it within the real user graph."
+        ),
+    )
+    p_transfer.add_argument(
+        "--clone-segment-users-to-agents",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Clone real segment-user profiles onto fake agent_N IDs for offline transfer training. "
+            "This keeps agents as fake users while giving them realistic history in the target "
+            "model training data (useful for LightGCN without reusing real user IDs)."
         ),
     )
     p_transfer.add_argument(
