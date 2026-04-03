@@ -99,7 +99,7 @@ set -euo pipefail
 #   --target-models neumf,lightgcn \
 #   --num-agents 4 --num-steps 8 \
 #   --target-keyword horror \
-#   --coordinator-policy rule --worker-policy rule \
+#   --coordinator-policy rule --worker-policy openai \
 #   --transfer-attack-roles sniper \
 #   --transfer-mode option-a \
 #   --max-interactions 10000 \
@@ -120,15 +120,16 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --goal-rank 3 \
   --num-agents 4 \
   --transfer-attack-roles sniper \
-  --coordinator-policy rule \
-  --episode-model lightgcn \
+  --coordinator-policy openai \
+  --worker-policy openai \
+  --episode-model surrogate \
   --victim-model-hint mf \
   --probe-steps 0 \
   --use-segment-users-as-agents \
   --rule-max-snipers 3 \
   --target-models neumf,lightgcn \
   --transfer-candidate-set cluster \
-  --output outputs/experiments/expE_reproduce_lgcn_direct_realusers_snipers3_cluster.json
+  --output outputs/experiments/expE_openai_surrogate_direct_realusers_snipers3_cluster.json
 
 PYTHONPATH=src python -m agas.cli run-transfer \
   --victim-model-hint auto \
@@ -136,9 +137,10 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --target-models neumf,lightgcn \
   --num-agents 4 \
   --num-steps 8 \
+  --episode-model surrogate \
   --target-keyword horror \
-  --coordinator-policy rule \
-  --worker-policy rule \
+  --coordinator-policy openai \
+  --worker-policy openai \
   --transfer-attack-roles sniper \
   --transfer-mode option-a \
   --max-interactions 10000 \
@@ -147,7 +149,7 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --target-item-id 1215 \
   --transfer-candidate-set cluster \
   --transfer-split-by-target-model \
-  --output outputs/experiments/expA_split_by_target.json
+  --output outputs/experiments/expA_openai_surrogate_split_by_target.json
 
 PYTHONPATH=src python -m agas.cli run-transfer \
   --transfer-mode option-a \
@@ -160,11 +162,12 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --goal-rank 3 \
   --num-agents 4 \
   --transfer-attack-roles sniper \
-  --coordinator-policy rule \
-  --episode-model sequential \
+  --coordinator-policy openai \
+  --worker-policy openai \
+  --episode-model surrogate \
   --victim-model-hint sequential \
   --probe-steps 0 \
   --target-models sequential \
   --transfer-candidate-set cluster \
-  --output outputs/experiments/expSeq_sequential_target.json
+  --output outputs/experiments/expSeq_openai_surrogate_target.json
 
