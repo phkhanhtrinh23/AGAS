@@ -282,6 +282,8 @@ def _build_target_config(args: argparse.Namespace) -> TargetModelConfig:
         seed=args.seed,
         device=args.target_device,
         lightgcn_layers=args.target_lightgcn_layers,
+        item_vocab_mode=str(getattr(args, "target_item_vocab", "all")),
+        item_vocab_max=_parse_optional_int(getattr(args, "target_item_vocab_max", None)),
     )
 
 
@@ -1095,6 +1097,8 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "target_implicit_only": bool(target_config.implicit_only),
         "target_device": str(target_config.device),
         "target_lightgcn_layers": int(target_config.lightgcn_layers),
+        "target_item_vocab": str(target_config.item_vocab_mode),
+        "target_item_vocab_max": target_config.item_vocab_max,
         "use_segment_users_as_agents": bool(getattr(args, "use_segment_users_as_agents", False)),
         "clone_segment_users_to_agents": bool(getattr(args, "clone_segment_users_to_agents", False)),
         "clone_profile_mapping": clone_mapping or None,
@@ -1497,6 +1501,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_transfer.add_argument("--target-device", default="cpu")
     p_transfer.add_argument("--target-lightgcn-layers", type=int, default=2)
+    p_transfer.add_argument(
+        "--target-item-vocab",
+        choices=["all", "observed"],
+        default="all",
+        help=(
+            "Item vocabulary for target models. 'all' uses items.csv plus observed items (default). "
+            "'observed' limits vocabulary to items seen in the interactions used for training."
+        ),
+    )
+    p_transfer.add_argument(
+        "--target-item-vocab-max",
+        default=None,
+        help=(
+            "Optional cap on item vocabulary size (after applying --target-item-vocab). "
+            "Use a number to keep only the most frequent items; set to None to disable."
+        ),
+    )
     p_transfer.add_argument(
         "--use-segment-users-as-agents",
         action=argparse.BooleanOptionalAction,

@@ -3,7 +3,7 @@ set -euo pipefail
 
 : "${OPENAI_API_KEY:?OPENAI_API_KEY is required}"
 
-# Online attack
+# # Online attack
 # PYTHONPATH=src python -m agas.cli run-episode \
 #   --processed-root processed \
 #   --dataset ml-latest-small \
@@ -284,3 +284,177 @@ PYTHONPATH=src python -m agas.cli run-transfer \
 #   --transfer-candidate-set cluster \
 #   --clone-segment-users-to-agents \
 #   --output outputs/experiments/exp_clone_profiles_lightgcn_cluster_steps24.json
+
+# ---- Other datasets (rule-based coordinator/worker)
+
+# ml-latest (Horror target: item_id=593). Uses observed vocab to avoid OOM.
+# PYTHONPATH=src python -m agas.cli run-transfer \
+#   --transfer-mode option-a \
+#   --processed-root processed \
+#   --dataset ml-latest \
+#   --max-interactions 20000 \
+#   --target-item-id 593 \
+#   --target-keyword horror \
+#   --num-steps 12 \
+#   --goal-rank 3 \
+#   --num-agents 4 \
+#   --transfer-attack-roles sniper \
+#   --coordinator-policy rule \
+#   --worker-policy rule \
+#   --episode-model surrogate \
+#   --victim-model-hint auto \
+#   --probe-steps 2 \
+#   --rule-max-snipers 3 \
+#   --target-models neumf,lightgcn \
+#   --transfer-candidate-set cluster \
+#   --transfer-split-by-target-model \
+#   --target-item-vocab observed \
+#   --output outputs/experiments/exp_ml_latest_split_rule_observed.json
+
+# ml-latest (Horror target: item_id=196). Non-goal target + no stop-on-goal.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest \
+  --max-interactions 20000 \
+  --target-item-id 196 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model surrogate \
+  --victim-model-hint auto \
+  --probe-steps 2 \
+  --rule-max-snipers 3 \
+  --target-models neumf,lightgcn \
+  --transfer-candidate-set cluster \
+  --transfer-split-by-target-model \
+  --target-item-vocab observed \
+  --no-stop-on-goal \
+  --output outputs/experiments/exp_ml_latest_split_rule_observed_nostop.json
+
+# ml-32m (Horror target: item_id=593). Uses observed vocab to avoid OOM.
+# PYTHONPATH=src python -m agas.cli run-transfer \
+#   --transfer-mode option-a \
+#   --processed-root processed \
+#   --dataset ml-32m \
+#   --max-interactions 20000 \
+#   --target-item-id 593 \
+#   --target-keyword horror \
+#   --num-steps 12 \
+#   --goal-rank 3 \
+#   --num-agents 4 \
+#   --transfer-attack-roles sniper \
+#   --coordinator-policy rule \
+#   --worker-policy rule \
+#   --episode-model surrogate \
+#   --victim-model-hint auto \
+#   --probe-steps 2 \
+#   --rule-max-snipers 3 \
+#   --target-models neumf,lightgcn \
+#   --transfer-candidate-set cluster \
+#   --transfer-split-by-target-model \
+#   --target-item-vocab observed \
+#   --output outputs/experiments/exp_ml_32m_split_rule_observed.json
+
+# genome_2021 (movie target: item_id=592). Uses observed vocab to avoid OOM.
+# PYTHONPATH=src python -m agas.cli run-transfer \
+#   --transfer-mode option-a \
+#   --processed-root processed \
+#   --dataset genome_2021 \
+#   --max-interactions 20000 \
+#   --target-item-id 592 \
+#   --target-keyword movie \
+#   --num-steps 12 \
+#   --goal-rank 3 \
+#   --num-agents 4 \
+#   --transfer-attack-roles sniper \
+#   --coordinator-policy rule \
+#   --worker-policy rule \
+#   --episode-model surrogate \
+#   --victim-model-hint auto \
+#   --probe-steps 2 \
+#   --rule-max-snipers 3 \
+#   --target-models neumf,lightgcn \
+#   --transfer-candidate-set cluster \
+#   --transfer-split-by-target-model \
+#   --target-item-vocab observed \
+#   --output outputs/experiments/exp_genome_2021_split_rule_observed.json
+
+# genome_2021 (all-items target via empty keyword). Non-goal target + no stop-on-goal.
+# PYTHONPATH=src python -m agas.cli run-transfer \
+#   --transfer-mode option-a \
+#   --processed-root processed \
+#   --dataset genome_2021 \
+#   --max-interactions 20000 \
+#   --target-item-id 586 \
+#   --target-keyword "" \
+#   --num-steps 12 \
+#   --goal-rank 3 \
+#   --num-agents 4 \
+#   --transfer-attack-roles sniper \
+#   --coordinator-policy rule \
+#   --worker-policy rule \
+#   --episode-model surrogate \
+#   --victim-model-hint auto \
+#   --probe-steps 2 \
+#   --rule-max-snipers 3 \
+#   --target-models neumf,lightgcn \
+#   --transfer-candidate-set cluster \
+#   --transfer-split-by-target-model \
+#   --target-item-vocab observed \
+#   --no-stop-on-goal \
+#   --output outputs/experiments/exp_genome_2021_split_rule_observed_nostop.json
+
+# amazon_review (local_business target). Uses observed vocab to avoid OOM.
+# PYTHONPATH=src python -m agas.cli run-transfer \
+#   --transfer-mode option-a \
+#   --processed-root processed \
+#   --dataset amazon_review \
+#   --max-interactions 10000 \
+#   --target-item-id "0x8890a84997a3ca01:0xb5c7b6fa2bbf6d9e" \
+#   --target-keyword local_business \
+#   --num-steps 12 \
+#   --goal-rank 3 \
+#   --num-agents 4 \
+#   --transfer-attack-roles sniper \
+#   --coordinator-policy rule \
+#   --worker-policy rule \
+#   --episode-model surrogate \
+#   --victim-model-hint auto \
+#   --probe-steps 2 \
+#   --rule-max-snipers 3 \
+#   --target-models neumf,lightgcn \
+#   --transfer-candidate-set cluster \
+#   --transfer-split-by-target-model \
+#   --target-item-vocab observed \
+#   --output outputs/experiments/exp_amazon_review_split_rule_observed.json
+
+# ml_20mx16x32 (synthetic target). Ratings are all 1.0, so set positive threshold to 1.0.
+# PYTHONPATH=src python -m agas.cli run-transfer \
+#   --transfer-mode option-a \
+#   --processed-root processed \
+#   --dataset ml_20mx16x32 \
+#   --max-interactions 20000 \
+#   --target-item-id 214978 \
+#   --target-keyword synthetic \
+#   --num-steps 12 \
+#   --goal-rank 3 \
+#   --num-agents 4 \
+#   --transfer-attack-roles sniper \
+#   --coordinator-policy rule \
+#   --worker-policy rule \
+#   --episode-model surrogate \
+#   --victim-model-hint auto \
+#   --probe-steps 2 \
+#   --rule-max-snipers 3 \
+#   --target-models neumf,lightgcn \
+#   --transfer-candidate-set cluster \
+#   --transfer-split-by-target-model \
+#   --target-item-vocab observed \
+#   --target-positive-threshold 1.0 \
+#   --target-explicit-negative-threshold 0 \
+#   --output outputs/experiments/exp_ml_20mx16x32_split_rule_observed_synth.json

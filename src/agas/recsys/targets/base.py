@@ -26,6 +26,8 @@ class TargetModelConfig:
     seed: int = 42
     device: str = "cpu"
     lightgcn_layers: int = 2
+    item_vocab_mode: str = "all"
+    item_vocab_max: Optional[int] = None
 
 
 class BaseTargetRecommender:
@@ -64,14 +66,23 @@ class BaseTargetRecommender:
         self.items = items.copy() if items is not None else None
 
         users = frame_full["user_id"].drop_duplicates().tolist()
-        if items is not None and "item_id" in items.columns:
-            # Use metadata items as the base vocabulary, but include any item IDs that appear
-            # in interactions (e.g., injected target items that may not exist in metadata).
-            meta_items = items["item_id"].astype(str).drop_duplicates().tolist()
-            observed_items = frame_full["item_id"].drop_duplicates().tolist()
-            items_list = list(dict.fromkeys([*meta_items, *observed_items]))
+        observed_items = frame_full["item_id"].drop_duplicates().tolist()
+        vocab_mode = str(self.config.item_vocab_mode or "all").strip().lower()
+        if vocab_mode == "observed":
+            items_list = observed_items
         else:
-            items_list = frame_full["item_id"].drop_duplicates().tolist()
+            if items is not None and "item_id" in items.columns:
+                # Use metadata items as the base vocabulary, but include any item IDs that appear
+                # in interactions (e.g., injected target items that may not exist in metadata).
+                meta_items = items["item_id"].astype(str).drop_duplicates().tolist()
+                items_list = list(dict.fromkeys([*meta_items, *observed_items]))
+            else:
+                items_list = observed_items
+        if self.config.item_vocab_max:
+            counts = frame_full["item_id"].value_counts()
+            keep = counts.index.astype(str).tolist()[: int(self.config.item_vocab_max)]
+            keep_set = set(keep)
+            items_list = [i for i in items_list if i in keep_set]
         self.user_to_idx = {u: i for i, u in enumerate(users)}
         self.item_to_idx = {i: j for j, i in enumerate(items_list)}
         self.idx_to_user = list(users)
