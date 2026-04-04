@@ -28,7 +28,25 @@ except ImportError:  # agas.data is optional (only needed for preprocess command
     preprocess_all = None  # type: ignore[assignment]
 from agas.llm.providers import build_llm_client
 from agas.recsys.surrogate import LightweightSurrogateRecommender, SurrogateConfig
-from agas.recsys.targets import LightGCNRecommender, NeuMFRecommender, SequentialRecommender, TargetModelConfig
+from agas.recsys.targets import (
+    BPRMFRecommender,
+    CDAERecommender,
+    GCMCRecommender,
+    GMFRecommender,
+    IAutoRecRecommender,
+    ItemKNNRecommender,
+    LightGCNRecommender,
+    MFRecommender,
+    NGCFRecommender,
+    NMFRecommender,
+    NeuMFRecommender,
+    PMFRecommender,
+    SequentialRecommender,
+    SVDppRecommender,
+    TargetModelConfig,
+    UAutoRecRecommender,
+    WMFRecommender,
+)
 from agas.simulation.environment import AGASEnvironment, DefenseConfig
 from agas.agents.defender import DefenseMonitorConfig
 from agas.simulation.episode import AGASEpisodeRunner, EpisodeConfig, default_agent_ids
@@ -258,7 +276,25 @@ def _parse_target_models(raw: str) -> list[str]:
         name = token.strip().lower()
         if not name:
             continue
-        if name not in {"neumf", "lightgcn", "sequential"}:
+        if name not in {
+            "mf",
+            "pmf",
+            "nmf",
+            "wmf",
+            "svdpp",
+            "gmf",
+            "bprmf",
+            "neumf",
+            "ncf",
+            "iautorec",
+            "uautorec",
+            "cdae",
+            "itemknn",
+            "ngcf",
+            "lightgcn",
+            "gcmc",
+            "sequential",
+        }:
             raise ValueError(f"Unsupported target model: {name}")
         out.append(name)
     if not out:
@@ -292,8 +328,36 @@ def _build_target_model(name: str, config: TargetModelConfig):
 
     if name == "neumf":
         return NeuMFRecommender(config=config)
+    if name == "ncf":
+        return NeuMFRecommender(config=config)
+    if name == "mf":
+        return MFRecommender(config=config)
+    if name == "gmf":
+        return GMFRecommender(config=config)
+    if name == "bprmf":
+        return BPRMFRecommender(config=config)
+    if name == "pmf":
+        return PMFRecommender(config=config)
+    if name == "wmf":
+        return WMFRecommender(config=config)
+    if name == "nmf":
+        return NMFRecommender(config=config)
+    if name == "svdpp":
+        return SVDppRecommender(config=config)
+    if name == "iautorec":
+        return IAutoRecRecommender(config=config)
+    if name == "uautorec":
+        return UAutoRecRecommender(config=config)
+    if name == "cdae":
+        return CDAERecommender(config=config)
+    if name == "itemknn":
+        return ItemKNNRecommender(config=config)
+    if name == "ngcf":
+        return NGCFRecommender(config=config)
     if name == "lightgcn":
         return LightGCNRecommender(config=config)
+    if name == "gcmc":
+        return GCMCRecommender(config=config)
     if name == "sequential":
         return SequentialRecommender(config=config)
     raise ValueError(f"Unsupported target model: {name}")
