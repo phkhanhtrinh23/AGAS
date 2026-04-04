@@ -196,28 +196,28 @@ set -euo pipefail
 #   --transfer-candidate-set all_items \
 #   --output outputs/experiments/exp_clone_baseline_lightgcn.json
 
-# Clone profiles (fake agents + cloned real-user histories): exp_clone_profiles_lightgcn.json
-PYTHONPATH=src python -m agas.cli run-transfer \
-  --transfer-mode option-a \
-  --processed-root processed \
-  --dataset ml-latest-small \
-  --max-interactions 10000 \
-  --target-item-id 1215 \
-  --target-keyword horror \
-  --num-steps 12 \
-  --goal-rank 3 \
-  --num-agents 4 \
-  --transfer-attack-roles sniper \
-  --coordinator-policy openai \
-  --worker-policy openai \
-  --episode-model lightgcn \
-  --victim-model-hint mf \
-  --probe-steps 0 \
-  --rule-max-snipers 3 \
-  --target-models lightgcn \
-  --transfer-candidate-set all_items \
-  --clone-segment-users-to-agents \
-  --output outputs/experiments/exp_clone_profiles_lightgcn.json
+# # Clone profiles (fake agents + cloned real-user histories): exp_clone_profiles_lightgcn.json
+# PYTHONPATH=src python -m agas.cli run-transfer \
+#   --transfer-mode option-a \
+#   --processed-root processed \
+#   --dataset ml-latest-small \
+#   --max-interactions 10000 \
+#   --target-item-id 1215 \
+#   --target-keyword horror \
+#   --num-steps 12 \
+#   --goal-rank 3 \
+#   --num-agents 4 \
+#   --transfer-attack-roles sniper \
+#   --coordinator-policy openai \
+#   --worker-policy openai \
+#   --episode-model lightgcn \
+#   --victim-model-hint mf \
+#   --probe-steps 0 \
+#   --rule-max-snipers 3 \
+#   --target-models lightgcn \
+#   --transfer-candidate-set all_items \
+#   --clone-segment-users-to-agents \
+#   --output outputs/experiments/exp_clone_profiles_lightgcn.json
 
 # # Clone profiles + more agents/steps (all_items): exp_clone_profiles_lightgcn_agents8_steps16_allitems.json
 # PYTHONPATH=src python -m agas.cli run-transfer \
@@ -433,6 +433,31 @@ PYTHONPATH=src python -m agas.cli run-transfer \
 #   --target-item-vocab observed \
 #   --output outputs/experiments/exp_amazon_review_split_rule_observed.json
 
+# amazon_review (both NeuMF + LightGCN improved in our run): exp_amazon_review_split_rule_observed.json
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset amazon_review \
+  --max-interactions 10000 \
+  --target-item-id "0x8890a84997a3ca01:0xb5c7b6fa2bbf6d9e" \
+  --target-keyword local_business \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model surrogate \
+  --victim-model-hint auto \
+  --probe-steps 2 \
+  --rule-max-snipers 3 \
+  --target-models neumf,lightgcn \
+  --transfer-candidate-set cluster \
+  --transfer-split-by-target-model \
+  --target-item-vocab observed \
+  --clone-segment-users-to-agents \
+  --output outputs/experiments/exp_amazon_review_split_rule_observed_both.json
+
 # ml_20mx16x32 (synthetic target). Ratings are all 1.0, so set positive threshold to 1.0.
 # PYTHONPATH=src python -m agas.cli run-transfer \
 #   --transfer-mode option-a \
@@ -458,3 +483,29 @@ PYTHONPATH=src python -m agas.cli run-transfer \
 #   --target-positive-threshold 1.0 \
 #   --target-explicit-negative-threshold 0 \
 #   --output outputs/experiments/exp_ml_20mx16x32_split_rule_observed_synth.json
+
+# ml-latest NeuMF (latest successful run with positive delta): exp_ml_latest_neumf_sniper_allitems_steps12.json
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest \
+  --max-interactions 20000 \
+  --target-item-id 196 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model surrogate \
+  --victim-model-hint auto \
+  --probe-steps 2 \
+  --rule-max-snipers 2 \
+  --target-models neumf,lightgcn \
+  --transfer-candidate-set all_items \
+  --target-item-vocab observed \
+  --target-explicit-negative-threshold 0 \
+  --clone-segment-users-to-agents \
+  --no-stop-on-goal \
+  --output outputs/experiments/exp_ml_latest_neumf_sniper_allitems_steps12.json
