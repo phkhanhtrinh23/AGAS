@@ -509,3 +509,61 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --clone-segment-users-to-agents \
   --no-stop-on-goal \
   --output outputs/experiments/exp_ml_latest_neumf_sniper_allitems_steps12.json
+
+# ---- Model sweep (traditional + neural + graph) on ml-latest-small
+
+# Traditional + neural CF models: exp_models_traditional_neural.json
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 8 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model surrogate \
+  --victim-model-hint auto \
+  --probe-steps 2 \
+  --rule-max-snipers 2 \
+  --target-models mf,gmf,bprmf,pmf,wmf,nmf,svdpp,neumf,ncf,iautorec,uautorec,cdae,itemknn \
+  --transfer-candidate-set cluster \
+  --target-item-vocab observed \
+  --target-epochs 1 \
+  --target-embedding-dim 16 \
+  --target-batch-size 512 \
+  --target-num-negatives 2 \
+  --target-explicit-negative-threshold 0 \
+  --output outputs/experiments/exp_models_traditional_neural.json
+
+# Graph CF models: exp_models_graph.json
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 8 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model surrogate \
+  --victim-model-hint auto \
+  --probe-steps 2 \
+  --rule-max-snipers 2 \
+  --target-models lightgcn,ngcf,gcmc \
+  --transfer-candidate-set cluster \
+  --target-item-vocab observed \
+  --target-epochs 1 \
+  --target-embedding-dim 16 \
+  --target-batch-size 512 \
+  --target-num-negatives 2 \
+  --target-explicit-negative-threshold 0 \
+  --output outputs/experiments/exp_models_graph.json
