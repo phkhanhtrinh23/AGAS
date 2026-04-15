@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import pickle
 from pathlib import Path
@@ -64,10 +65,45 @@ def _parse_optional_int(raw: str | None) -> Optional[int]:
 
     if raw is None:
         return None
+
     value = str(raw).strip().lower()
     if value in {"none", "null", "all", "full"}:
         return None
     return int(value)
+
+
+def _parse_int_list(raw: str | None, *, default: list[int]) -> list[int]:
+    """Parse a comma-separated integer list CLI value."""
+
+    if raw is None:
+        return list(default)
+    text = str(raw).strip()
+    if not text:
+        return list(default)
+    out: list[int] = []
+    for part in text.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            value = int(part)
+        except ValueError as e:
+            raise argparse.ArgumentTypeError(f"Invalid integer in list: {part!r}") from e
+        if value > 0:
+            out.append(value)
+    if not out:
+        return list(default)
+    # stable unique + sort for predictable output
+    out = sorted(set(out))
+    return out
+
+
+def _rank_to_hr_ndcg(rank: int, k: int) -> tuple[float, float]:
+    """Compute HR@K and NDCG@K from a 1-based rank (single relevant item)."""
+
+    if rank <= 0 or k <= 0 or rank > k:
+        return 0.0, 0.0
+    return 1.0, float(1.0 / math.log2(rank + 1.0))
 
 
 def _load_processed_tables(
@@ -774,6 +810,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
     mode = args.transfer_mode
     target_models = _parse_target_models(args.target_models)
     target_config = _build_target_config(args)
+    metrics_ks = _parse_int_list(getattr(args, "metrics_k", "10"), default=[10])
 
     interactions, items = _load_processed_tables(
         processed_root=Path(args.processed_root),
@@ -928,6 +965,21 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     segment_user_ids=segment_user_ids,
                     candidate_items=candidate_items,
                 )
+                hr_at_k: dict[str, dict[str, float]] = {}
+                ndcg_at_k: dict[str, dict[str, float]] = {}
+                for k in metrics_ks:
+                    hr_before, ndcg_before = _rank_to_hr_ndcg(int(initial_rank), int(k))
+                    hr_after, ndcg_after = _rank_to_hr_ndcg(int(final_rank), int(k))
+                    hr_at_k[str(k)] = {
+                        "before": float(hr_before),
+                        "after": float(hr_after),
+                        "delta": float(hr_after - hr_before),
+                    }
+                    ndcg_at_k[str(k)] = {
+                        "before": float(ndcg_before),
+                        "after": float(ndcg_after),
+                        "delta": float(ndcg_after - ndcg_before),
+                    }
                 option_a_results[name] = {
                     "initial_rank": int(initial_rank),
                     "initial_total_candidates": int(initial_total),
@@ -937,6 +989,8 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     "normalized_rank_before": round(initial_rank / initial_total, 4) if initial_total else None,
                     "normalized_rank_after": round(final_rank / final_total, 4) if final_total else None,
                     "normalized_rank_delta": round((initial_rank - final_rank) / initial_total, 4) if initial_total else None,
+                    "hr_at_k": hr_at_k,
+                    "ndcg_at_k": ndcg_at_k,
                     "attack_interactions": int(len(attack_rows)),
                     "cloned_profile_rows": int(len(cloned_rows)),
                 }
@@ -1053,6 +1107,21 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     segment_user_ids=segment_user_ids,
                     candidate_items=candidate_items,
                 )
+                hr_at_k: dict[str, dict[str, float]] = {}
+                ndcg_at_k: dict[str, dict[str, float]] = {}
+                for k in metrics_ks:
+                    hr_before, ndcg_before = _rank_to_hr_ndcg(int(initial_rank), int(k))
+                    hr_after, ndcg_after = _rank_to_hr_ndcg(int(final_rank), int(k))
+                    hr_at_k[str(k)] = {
+                        "before": float(hr_before),
+                        "after": float(hr_after),
+                        "delta": float(hr_after - hr_before),
+                    }
+                    ndcg_at_k[str(k)] = {
+                        "before": float(ndcg_before),
+                        "after": float(ndcg_after),
+                        "delta": float(ndcg_after - ndcg_before),
+                    }
                 option_a_results[name] = {
                     "initial_rank": int(initial_rank),
                     "initial_total_candidates": int(initial_total),
@@ -1062,6 +1131,8 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     "normalized_rank_before": round(initial_rank / initial_total, 4) if initial_total else None,
                     "normalized_rank_after": round(final_rank / final_total, 4) if final_total else None,
                     "normalized_rank_delta": round((initial_rank - final_rank) / initial_total, 4) if initial_total else None,
+                    "hr_at_k": hr_at_k,
+                    "ndcg_at_k": ndcg_at_k,
                     "attack_interactions": int(len(attack_rows_local)),
                     "cloned_profile_rows": int(len(cloned_rows_local)),
                 }
@@ -1114,6 +1185,22 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
             )
             result = runner.run()
             goal_summary = _summarize_goal_status(initial_rank=initial_rank, history=result.history, goal_rank=args.goal_rank)
+            hr_at_k: dict[str, dict[str, float]] = {}
+            ndcg_at_k: dict[str, dict[str, float]] = {}
+            for k in metrics_ks:
+                hr_initial, ndcg_initial = _rank_to_hr_ndcg(int(initial_rank), int(k))
+                hr_final, ndcg_final = _rank_to_hr_ndcg(int(result.final_rank), int(k))
+                hr_best, ndcg_best = _rank_to_hr_ndcg(int(goal_summary["best_rank"]), int(k))
+                hr_at_k[str(k)] = {
+                    "initial": float(hr_initial),
+                    "final": float(hr_final),
+                    "best": float(hr_best),
+                }
+                ndcg_at_k[str(k)] = {
+                    "initial": float(ndcg_initial),
+                    "final": float(ndcg_final),
+                    "best": float(ndcg_best),
+                }
             option_b_results[name] = {
                 "initial_rank": int(initial_rank),
                 "initial_total_candidates": int(env.total_candidates),
@@ -1125,6 +1212,8 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 "goal_first_reached_step": goal_summary["goal_first_reached_step"],
                 "stopped_early": bool(result.stopped_early),
                 "stop_reason": result.stop_reason,
+                "hr_at_k": hr_at_k,
+                "ndcg_at_k": ndcg_at_k,
                 "history": result.history,
             }
 
@@ -1151,6 +1240,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "target_models": target_models,
         "transfer_candidate_set": str(args.transfer_candidate_set),
         "transfer_candidate_set_size": int(len(candidate_items)),
+        "metrics_k": metrics_ks,
         "target_embedding_dim": int(target_config.embedding_dim),
         "target_epochs": int(target_config.epochs),
         "target_batch_size": int(target_config.batch_size),
@@ -1185,9 +1275,15 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
     if option_a_results:
         print("Option A (offline target models):")
         for name, stats in option_a_results.items():
+            k0 = str(metrics_ks[0]) if metrics_ks else "10"
+            hr = stats.get("hr_at_k", {}).get(k0, {}).get("after", None)
+            ndcg = stats.get("ndcg_at_k", {}).get(k0, {}).get("after", None)
+            metric_text = ""
+            if hr is not None and ndcg is not None:
+                metric_text = f", HR@{k0}={hr:.3f}, NDCG@{k0}={ndcg:.3f}"
             print(
                 f"  {name}: rank {stats['initial_rank']}->{stats['final_rank']} "
-                f"(delta {stats['rank_delta']}) using {stats['attack_interactions']} attack interactions"
+                f"(delta {stats['rank_delta']}) using {stats['attack_interactions']} attack interactions{metric_text}"
             )
     if option_b_results:
         print("Option B (in-loop target models):")
@@ -1518,6 +1614,11 @@ def build_parser() -> argparse.ArgumentParser:
             "LightGCN uses real users + direct target edges (MF-style) + more snipers + all_items "
             "candidate set; NeuMF uses the standard settings. Outputs per-target histories and settings."
         ),
+    )
+    p_transfer.add_argument(
+        "--metrics-k",
+        default="10",
+        help="Comma-separated list of K values for HR@K / NDCG@K derived from the reported target-item rank (default: 10).",
     )
     p_transfer.add_argument(
         "--allow-cold-start-target",

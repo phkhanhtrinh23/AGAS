@@ -97,6 +97,140 @@ Optional target-model dependencies (NeuMF/LightGCN):
 python -m pip install -e ".[targets]"
 ```
 
+## 3a. Technical Detail
+<details>
+
+This repo is a Python + CLI research framework (`agas`) with optional LLM-based agents and optional PyTorch target-model training. The values below reflect the **current environment where this README was last verified (2026-04-15)**.
+
+### Platform / Hardware (this machine)
+
+| Component | Value |
+| --- | --- |
+| OS | Ubuntu 24.04.2 LTS (kernel 6.14.0-24-generic) |
+| CPU | Intel(R) Core(TM) i7-14700 (28 logical CPUs, 20 cores) |
+| RAM | 31 GiB (swap 8 GiB) |
+| GPU | NVIDIA GeForce RTX 4090 (24,564 MiB), driver 575.64.03 |
+
+### Software stack
+
+| Layer | What AGAS uses |
+| --- | --- |
+| Python | Python 3.13.5 |
+| Core data | `pandas`, `numpy` for canonical frames and sampling |
+| Surrogate model | `scikit-learn` (`TruncatedSVD`) + popularity/bias fallback |
+| Target models | `torch` (PyTorch 2.8.0+cu129; CUDA runtime 12.9) |
+| LLM backends | OpenAI API or Ollama (`src/agas/llm/providers.py`) |
+| Token counting (optional) | `tiktoken` (used for prompt/token audits) |
+
+`nvcc` in this environment reports CUDA compilation tools 12.0 (not required unless building custom CUDA code).
+
+### Datasets (raw + processed)
+
+- **Raw datasets** live under `data/<dataset>/` (adapters in `src/agas/data/loaders/`).
+- **Processed datasets** are exported to `processed/<dataset>/interactions.csv` and `processed/<dataset>/items.csv` with a canonical schema:
+  - interactions: `dataset,user_id,item_id,rating,timestamp,split,context_json,source`
+  - items: `dataset,item_id,title,genres,category,metadata_json,source`
+- During iteration, preprocessing commonly caps export via `--max-rows-per-dataset 2000000` (see `processed/summary.csv` notes).
+
+Processed dataset sizes in this repo (from `processed/summary.csv`):
+
+| Dataset | Interactions | Users | Items |
+| --- | ---:| ---:| ---:|
+| `ml-latest-small` | 100,836 | 610 | 9,724 |
+| `ml-latest` | 2,000,000 | 19,651 | 33,129 |
+| `ml-32m` | 2,000,000 | 12,773 | 36,603 |
+| `ml_20mx16x32` | 2,000,000 | 2,365 | 181,263 |
+| `genome_2021` | 2,000,000 | 37,941 | 8,687 |
+| `amazon_review` | 2,000,000 | 998,653 | 48,746 |
+
+Dataset notes (high level):
+
+- `ml-*`: MovieLens movie ratings (items include titles/genres). `ml-32m` is originally much larger; this repo’s processed export is capped for practicality unless you disable limits.
+- `ml_20mx16x32`: MovieLens-20M-derived “fractal” split with a very large item universe (useful for stress-testing candidate pools).
+- `genome_2021`: Movie tag genome / movie ratings style data (keyword metadata may be sparse; keyword-based segmentation can be harder).
+- `amazon_review`: product review ratings (very large user base; useful for cold-start / sparse-history regimes).
+
+### Recommender models (surrogate + targets)
+
+AGAS separates the **episode recommender** (used for step-by-step feedback) from **target recommenders** (used for transfer evaluation).
+
+- **Episode model** (`--episode-model`):
+  - `surrogate` (default): lightweight SVD-based recommender in `src/agas/recsys/surrogate.py`, updated online each step.
+  - optionally: `lightgcn`, `neumf`, `mf`, `svdpp`, `sequential`, etc. (minimal reference target implementations under `src/agas/recsys/targets/`).
+- **Target models** (`--target-models`): one or more of the above PyTorch models used for offline transfer evaluation (Option A) and/or in-loop evaluation (Option B).
+
+All recommenders implement a shared interface (`BaseTargetRecommender` / surrogate wrapper) used by the environment for:
+- `fit()` / (episode) `append_interactions()`
+- scoring + ranking a `target_item_id` against a **candidate set** (e.g. `--transfer-candidate-set cluster` vs `all_items`)
+
+### Offline training losses (targets)
+
+In Option A (offline transfer), target models are trained on clean vs. clean+attack and compared by rank shift.
+
+- **MF / NeuMF / SVD++ (implicit pointwise)**: `BCEWithLogitsLoss` on positives plus **negative sampling** from *unseen* items (and optional explicit negatives if configured).
+- **LightGCN (pairwise)**: BPR loss on triplets `(u, pos_i, neg_j)` with negative sampling.
+- **Sequential**: first-order Markov transitions + popularity fallback (no gradient training).
+
+### Approximate model size (parameters)
+
+For embedding dimension `d`, a rough parameter count (excluding optimizer state) is:
+
+- `LightGCN`: `(U + I) * d`
+- `MF`: `(U + I) * d`
+- `NeuMF`: `2 * (U + I) * d + MLP` (small MLP on top)
+- `SVD++`: `(U + 2I) * d`
+
+Example with `d=32` on `ml-latest-small` (`U=610`, `I=9,724`):
+
+| Model | Params (approx) |
+| --- | ---:|
+| LightGCN / MF | 330,688 |
+| NeuMF (embeddings only) | 661,376 |
+| SVD++ (embeddings only) | 641,856 |
+
+### LLM agents: prompts, token budgets, and communication
+
+LLM policies are enabled by selecting `--coordinator-policy openai|ollama` and/or `--worker-policy openai|ollama`. The coordinator assigns roles; workers propose actions; the environment returns outcomes + black-box signals.
+
+At the code level, components communicate via typed protocol messages in `src/agas/agents/messages.py` (e.g., `CoordinatorObservation` → `RoleAssignment` → `RatingAction` → `EnvironmentFeedback` / `AgentBlackBoxSignal`).
+
+**Static prompt template token counts** (measured with `tiktoken` `o200k_base` on the checked-in prompt files; per-call totals are higher due to dynamic JSON observations):
+
+| Prompt template | Tokens |
+| --- | ---:|
+| `prompts/coordinator/system.txt` | 580 |
+| `prompts/coordinator/user.txt` | 153 |
+| `prompts/worker_profiler/system.txt` | 90 |
+| `prompts/worker_profiler/user.txt` | 61 |
+| `prompts/worker_camouflaguer/system.txt` | 97 |
+| `prompts/worker_camouflaguer/user.txt` | 58 |
+| `prompts/worker_sniper/system.txt` | 95 |
+| `prompts/worker_sniper/user.txt` | 60 |
+| `prompts/worker_inactive/system.txt` | 60 |
+| `prompts/worker_inactive/user.txt` | 22 |
+
+Dynamic tokens come from the per-step observation payload (public signals, recent outcomes, candidate-set summaries, etc.) and scale with `--num-agents`, `--num-steps`, and memory settings such as `--coordinator-agent-memory`.
+
+### Metrics reported
+
+Transfer evaluation writes JSON with (at minimum):
+
+- **Option A (offline target models)**:
+  - `initial_rank`, `final_rank`, and `rank_delta = initial_rank - final_rank`
+  - `normalized_rank_delta` (rank change normalized by candidate pool size)
+  - `attack_interactions` (# accepted interactions injected into target training)
+  - `hr_at_k` / `ndcg_at_k` (rank-derived top-K metrics for the **single target item**; configured by `--metrics-k`, default `10`)
+- **Option B (in-loop target models)**:
+  - `final_rank` and the best rank achieved over the episode trajectory
+  - `hr_at_k` / `ndcg_at_k` for `initial` / `final` / `best`
+
+Notes:
+
+- HR@K and NDCG@K here are **derived from the reported 1-based rank of the target item** (not from a held-out test set with many relevant items).
+  - `HR@K = 1[rank <= K]`
+  - `NDCG@K = 1 / log2(rank + 1)` if `rank <= K`, else `0`
+</details>
+
 ## 4. Preprocess Data
 
 Run all available adapters:
