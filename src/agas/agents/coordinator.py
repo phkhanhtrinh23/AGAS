@@ -185,11 +185,16 @@ class RuleBasedCoordinatorPolicy:
             return assignments
 
         if step == 2:
-            for aid in self.agent_order[1:3]:
+            # Prefer keeping agent 0 as a background camouflaguer, but guarantee at least one sniper
+            # even when running with a small number of agents (e.g., 1–2).
+            sniper_pool = list(self.agent_order[1:]) or [self.agent_order[0]]
+            for aid in sniper_pool[:2]:
                 assignments[aid].role = AgentRole.SNIPER
                 assignments[aid].rationale = "Deliver synchronized payload after camouflage warm-up."
-            assignments[self.agent_order[0]].role = AgentRole.CAMOUFLAGEUR
-            assignments[self.agent_order[0]].rationale = "Generate benign background activity as timing noise."
+            remaining = [aid for aid in self.agent_order if assignments[aid].role == AgentRole.INACTIVE]
+            for aid in remaining[:1]:
+                assignments[aid].role = AgentRole.CAMOUFLAGEUR
+                assignments[aid].rationale = "Generate benign background activity as timing noise."
             return assignments
 
         alerted = [

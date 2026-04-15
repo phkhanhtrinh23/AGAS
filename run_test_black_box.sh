@@ -567,3 +567,33 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --target-num-negatives 2 \
   --target-explicit-negative-threshold 0 \
   --output outputs/experiments/exp_models_graph.json
+
+# Test Netflix data
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset netflix \
+  --max-interactions 600000 \
+  --target-item-id 1939 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 10 \
+  --no-stop-on-goal \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model surrogate \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 2 \
+  --no-profiler-probe-on-stall \
+  --target-models neumf,lightgcn \
+  --transfer-candidate-set cluster \
+  --metrics-k 10,50,100 \
+  --target-epochs 2 \
+  --target-embedding-dim 32 \
+  --target-batch-size 2048 \
+  --target-num-negatives 4 \
+  --target-device cuda \
+  --output outputs/experiments/exp_netflix_transfer_rule_1939_mf.json

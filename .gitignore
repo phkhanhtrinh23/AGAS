@@ -14,4 +14,4 @@ outputs/*.pkl
 processed/
 *.log
 
-data/
+/data/

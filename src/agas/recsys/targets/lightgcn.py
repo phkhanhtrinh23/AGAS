@@ -110,22 +110,24 @@ class LightGCNRecommender(BaseTargetRecommender):
         self.model = model
 
     def _build_norm_adj(self, frame: pd.DataFrame, num_users: int, num_items: int, device: torch.device) -> torch.Tensor:
-        user_idx = frame["user_id"].map(self.user_to_idx).to_numpy()
-        item_idx = frame["item_id"].map(self.item_to_idx).to_numpy()
-        rows = np.concatenate([user_idx, item_idx + num_users])
-        cols = np.concatenate([item_idx + num_users, user_idx])
-        vals = np.ones_like(rows, dtype=np.float32)
+        user_idx = frame["user_id"].map(self.user_to_idx).to_numpy(dtype=np.int64, copy=False)
+        item_idx = frame["item_id"].map(self.item_to_idx).to_numpy(dtype=np.int64, copy=False)
+        rows = np.concatenate([user_idx, item_idx + num_users]).astype(np.int64, copy=False)
+        cols = np.concatenate([item_idx + num_users, user_idx]).astype(np.int64, copy=False)
 
-        idx = torch.tensor([rows, cols], device=device)
+        size = int(num_users + num_items)
+
+        # Degree-normalized adjacency for LightGCN uses:
+        #   norm_val(u,v) = 1 / sqrt(deg(u) * deg(v))
+        # Avoid constructing dense diagonal matrices (which is infeasible for large graphs).
+        deg = np.bincount(rows, minlength=size).astype(np.float32, copy=False)
+        deg_inv_sqrt = 1.0 / np.sqrt(deg + 1e-8)
+        deg_inv_sqrt[np.isinf(deg_inv_sqrt)] = 0.0
+        vals = (deg_inv_sqrt[rows] * deg_inv_sqrt[cols]).astype(np.float32, copy=False)
+
+        idx = torch.tensor(np.stack([rows, cols], axis=0), device=device)
         vals_t = torch.tensor(vals, device=device)
-        size = num_users + num_items
-        adj = torch.sparse_coo_tensor(idx, vals_t, (size, size))
-
-        deg = torch.sparse.sum(adj, dim=1).to_dense()
-        deg_inv_sqrt = torch.pow(deg + 1e-8, -0.5)
-        deg_inv_sqrt[torch.isinf(deg_inv_sqrt)] = 0.0
-        d_mat = torch.diag(deg_inv_sqrt)
-        norm_adj = torch.sparse.mm(torch.sparse.mm(adj, d_mat), d_mat)
+        norm_adj = torch.sparse_coo_tensor(idx, vals_t, (size, size)).coalesce()
         return norm_adj
 
     def _score_users_items(self, user_indices: torch.Tensor, item_indices: torch.Tensor) -> torch.Tensor:
