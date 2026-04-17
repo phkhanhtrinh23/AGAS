@@ -190,7 +190,7 @@ Example with `d=32` on `ml-latest-small` (`U=610`, `I=9,724`):
 
 ### LLM agents: prompts, token budgets, and communication
 
-LLM policies are enabled by selecting `--coordinator-policy openai|ollama` and/or `--worker-policy openai|ollama`. The coordinator assigns roles; workers propose actions; the environment returns outcomes + black-box signals.
+LLM policies are enabled by selecting `--coordinator-policy openai` and `--worker-policy openai`. The coordinator assigns roles; workers propose actions; the environment returns outcomes + black-box signals.
 
 At the code level, components communicate via typed protocol messages in `src/agas/agents/messages.py` (e.g., `CoordinatorObservation` → `RoleAssignment` → `RatingAction` → `EnvironmentFeedback` / `AgentBlackBoxSignal`).
 
@@ -210,6 +210,190 @@ At the code level, components communicate via typed protocol messages in `src/ag
 | `prompts/worker_inactive/user.txt` | 22 |
 
 Dynamic tokens come from the per-step observation payload (public signals, recent outcomes, candidate-set summaries, etc.) and scale with `--num-agents`, `--num-steps`, and memory settings such as `--coordinator-agent-memory`.
+
+#### Estimated LLM tokens (OpenAI coordinator + OpenAI workers)
+
+This section reports token usage for the **LLM-based pipeline** only:
+
+- `--coordinator-policy openai`
+- `--worker-policy openai`
+
+When `--worker-policy openai` is enabled, **each non-inactive worker** builds a `context_json` payload and sends:
+
+- system: `prompts/worker_<role>/system.txt`
+- user: `prompts/worker_<role>/user.txt` with an embedded JSON context (truncated pools + rolling trajectory summary)
+
+Implementation: `src/agas/agents/worker.py` (`_act_with_llm`). Key truncation defaults:
+
+- `benchmark_items`: first 20
+- `target_cluster_items`: first 20
+- `competitor_items`: first 10
+- `noise_items`: first 20
+- `trajectory_summary`: last `--trajectory-window` steps (default 5)
+
+What these truncation defaults mean in practice:
+
+- Each of the `*_items` fields is a **list of item IDs/titles** the environment makes available to the worker (benchmark/popularity probes, target-cluster candidates, competitor candidates, and benign noise). These lists can be large on real datasets, so the worker **caps** how many are serialized into `context_json` to keep the prompt size bounded and stable.
+- The worker uses a **rolling window** of recent steps in `trajectory_summary` so the LLM can condition on what worked *recently* (accepted vs. dropped, trust/risk changes) without replaying the entire episode transcript.
+
+Token accounting below is computed by reconstructing the rendered prompts from saved episode histories via `scripts/audit_llm_worker_tokens.py` (tokenizer: `tiktoken` `o200k_base`).
+
+Two token counts are reported:
+
+- **Input tokens**: tokens in the (system+user) prompt.
+- **Output tokens (estimated)**: tokens in the JSON we *expect* the LLM to emit (estimated by tokenizing the serialized `{"actions":[...]}` or coordinator role-map JSON that was actually executed). Real completions can be slightly larger/smaller depending on whitespace and explanation verbosity.
+
+Reference (measured from `outputs/experiments/exp_clone_profiles_lightgcn.json`, 12 steps, 4 agents, `--coordinator-policy openai --worker-policy openai`, `--trajectory-window 5`):
+
+| Component | Calls | Avg input tokens/call | Avg output tokens/call (estimated) | Avg total tokens/call (estimated) |
+| --- | ---:| ---:| ---:| ---:|
+| coordinator | 12 | ~8,264 | ~39 | ~8,303 |
+| worker: profiler | 10 | ~1,700 | ~136 | ~1,836 |
+| worker: camouflaguer | 20 | ~1,921 | ~100 | ~2,021 |
+| worker: sniper | 13 | ~1,588 | ~118 | ~1,706 |
+
+Totals for the same reference run:
+
+- Total input tokens (coordinator + workers): **~175,236**
+- Total output tokens (estimated): **~5,362**
+- Total tokens (estimated): **~180,598**
+
+Reproduce the audit:
+
+```bash
+PYTHONPATH=src python scripts/audit_llm_worker_tokens.py \
+  --episode-json outputs/experiments/exp_clone_profiles_lightgcn.json \
+  --trajectory-window 5
+```
+
+Notes on output tokens:
+
+- The audit script reports `output_trace_mean` / `output_trace_count` when an episode JSON contains non-empty `trace.raw_response` fields. Some runs record only the executed actions (so `output_trace_count` can be < total calls).
+- For reporting/cost estimation, the **estimated output tokens** are the most consistent cross-run signal because they do not depend on whether raw responses were logged.
+
+**Why workers have more avg. output tokens/call than coordinator?**
+
+Yes, that’s expected in our current setup.
+
+- **Coordinator output is tiny by design**: the coordinator prompt enforces “return strictly valid JSON with agent IDs as keys and values in profiler/camouflaguer/sniper/inactive”, so the completion is basically a small role map like `{"a0":"sniper","a1":"inactive",...}` → ~tens of tokens.
+- **Worker output includes free-text**: workers must return `{"actions":[{"item_id":...,"rating":...,"reason":"..."}]}`; the `reason` strings (and sometimes multiple actions) make the JSON noticeably longer → ~100+ tokens/call is plausible.
+- Also note our README numbers are **“output tokens (estimated)”** from serializing the executed JSON (role map / actions). If you later change prompts to require coordinator rationales, coordinator output tokens would go up.
+
+Workers don’t necessarily output 1 action per call in AGAS.
+
+- The worker contract is **always** `{"actions":[ ... ]}` (a *list*), and the prompt templates explicitly say “Generate up to `{{max_actions}}` …”.
+- In code, `max_actions` comes from `WorkerPolicyConfig`:
+  - profiler: `profiler_actions` (default **3**)
+  - camouflaguer: `camouflaguer_actions` (default **2**)
+  - sniper: `1 + sniper_competitor_actions` (default `1+2 =` **3**) via `src/agas/agents/worker.py:_candidate_context`
+- In the OpenAI reference run we used for the README (`outputs/experiments/exp_clone_profiles_lightgcn.json`), it actually happened: per report the action counts were `(2, 22 reports)` and `(3, 21 reports)` (only 5 inactive reports had 0). So many worker calls had **2–3 actions**.
+
+That’s also why worker **avg output tokens/call** can be higher than coordinator: the coordinator outputs a tiny role map, while each worker outputs a list of action dicts with `reason` strings.
+
+##### How tokens scale with `--num-agents` (OpenAI coordinator + OpenAI workers)
+
+With `--coordinator-policy openai`, the coordinator makes **one LLM call per step** and its prompt includes a per-agent observation block, so **coordinator input tokens scale roughly linearly** with `--num-agents`.
+
+With `--worker-policy openai`, worker token usage scales with the number of **active** (non-inactive) agents per step. If most agents are inactive, total worker tokens may grow slowly (or even stay roughly flat) as `--num-agents` increases.
+
+Estimated combined tokens (workers + coordinator) for the same 12-step reference episode as `--num-agents` increases. This keeps the *worker activation pattern* constant (most agents inactive → no worker LLM call) and scales the coordinator **input prompt** (per-agent observation blocks) and **output role-map JSON** by cloning per-agent blocks:
+
+| Agents | Total input tokens | Total output tokens (estimated) | Total tokens (estimated) | Avg / step | Avg / agent / step |
+| ---:| ---:| ---:| ---:| ---:| ---:|
+| 4 | ~175,236 | ~5,362 | ~180,598 | ~15,050 | ~3,762 |
+| 8 | ~234,521 | ~5,829 | ~240,350 | ~20,029 | ~2,504 |
+| 16 | ~353,091 | ~6,763 | ~359,854 | ~29,988 | ~1,874 |
+| 32 | ~590,230 | ~8,631 | ~598,861 | ~49,905 | ~1,560 |
+| 128 | ~2,013,066 | ~19,839 | ~2,032,905 | ~169,409 | ~1,324 |
+
+Real totals can be higher/lower depending on how many agents the coordinator actually assigns to non-inactive roles and how verbose the LLM outputs are.
+
+#### Worker prompt templates (current)
+
+Profiler:
+
+```text
+system (prompts/worker_profiler/system.txt)
+You are the Profiler attack agent in an AGAS simulation.
+Your goal is to probe whether the recommender is accepting new ratings without exposing
+the broader attack. Choose only plausible ratings on benchmark items.
+You receive a rolling summary of your own recent actions and outcomes; use it to reason
+about past success or suppression.
+
+Return strictly valid JSON:
+{"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}
+
+user (prompts/worker_profiler/user.txt)
+Generate up to {{max_actions}} profiler actions for agent {{agent_id}} at step {{step}}.
+Use only allowed candidate items from the context. Favor benign, high-popularity items and
+moderate-to-positive ratings that help estimate whether the recommender is integrating activity.
+
+Context:
+{{context_json}}
+```
+
+Camouflaguer:
+
+```text
+system (prompts/worker_camouflaguer/system.txt)
+You are the Camouflaguer attack agent in an AGAS simulation.
+Your goal is to blend into the target domain, accumulate trust, and reduce the chance that
+the recommender filters or discounts your actions. Choose only plausible ratings.
+You receive a rolling summary of your own recent actions and outcomes; use it to reason
+about past success or suppression.
+
+Return strictly valid JSON:
+{"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}
+
+user (prompts/worker_camouflaguer/user.txt)
+Generate up to {{max_actions}} camouflaguer actions for agent {{agent_id}} at step {{step}}.
+Use only allowed candidate items from the context. Favor plausible target-cluster items and,
+when risk looks elevated, mix in benign noise items.
+
+Context:
+{{context_json}}
+```
+
+Sniper:
+
+```text
+system (prompts/worker_sniper/system.txt)
+You are the Sniper attack agent in an AGAS simulation.
+Your goal is to promote the target item aggressively and, when appropriate, demote nearby
+competitors. Operate within the allowed candidate items and return concise reasons.
+You receive a rolling summary of your own recent actions and outcomes; use it to reason
+about past success or suppression.
+
+Return strictly valid JSON:
+{"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}
+
+user (prompts/worker_sniper/user.txt)
+Generate up to {{max_actions}} sniper actions for agent {{agent_id}} at step {{step}}.
+Use only allowed candidate items from the context. The target item should receive the strongest
+positive rating. If competitor items are used, use strong negative ratings sparingly.
+
+Context:
+{{context_json}}
+```
+
+Inactive (note: inactive role does **not** call the LLM in the current code path):
+
+```text
+system (prompts/worker_inactive/system.txt)
+You are the Inactive attack agent in an AGAS simulation.
+Your goal is to remain dormant for this step to reduce visible activity.
+You receive a rolling summary of your own recent actions and outcomes; use it to reason
+about past success or suppression.
+
+Return strictly valid JSON:
+{"actions":[]}
+
+user (prompts/worker_inactive/user.txt)
+No actions are required for agent {{agent_id}} at step {{step}}.
+
+Context:
+{{context_json}}
+```
 
 ### Metrics reported
 
