@@ -597,3 +597,286 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --target-num-negatives 4 \
   --target-device cuda \
   --output outputs/experiments/exp_netflix_transfer_rule_1939_mf.json
+
+# ---- Dense-profiler experiments: can fake users attack LightGCN without real users? ----
+# Research question: does building denser fake-user profiles (more items, cluster-focused)
+# before firing the sniper give cold-start fake users enough graph connectivity to attack
+# LightGCN effectively without cloning or reusing real user IDs?
+
+# Exp 1 — Baseline (fake users, 3 profiler actions, no cluster pool, sniper-only extraction)
+# Expected: catastrophic rank drop (degree inflation dominates cold-start fake users)
+# Result: lightgcn rank_delta=-2141, ngcf rank_delta=-1008
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --output outputs/experiments/exp_dense_profiler_baseline.json
+
+# Exp 2 — Dense cluster profiler, sniper-only extraction
+# 15 profiler + 10 camouflaguer actions from cluster items, but ONLY sniper rows injected.
+# Tests whether episode-phase connectivity helps when training data has none.
+# Result: lightgcn rank_delta=-2107 (negligible improvement; sniper edges still dominate)
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 15 \
+  --camouflaguer-actions 10 \
+  --profiler-use-cluster \
+  --output outputs/experiments/exp_dense_profiler_lgcn_ngcf.json
+
+# Exp 3 — Dense cluster profiler + ALL roles injected into training
+# Fake users arrive at victim model retraining with many cluster-item edges.
+# Result: lightgcn rank_delta=-1882 (slightly less bad but still catastrophic).
+# Root cause: cluster-item ratings boost competitors; degree growth dilutes target edge.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper,camouflaguer,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 15 \
+  --camouflaguer-actions 10 \
+  --profiler-use-cluster \
+  --output outputs/experiments/exp_dense_profiler_allroles.json
+
+# Exp 4 — Dense BENCHMARK profiler + ALL roles injected
+# Profiler uses popular non-cluster items (no competitor boosting from profiler).
+# Camouflageur still uses cluster items. Tests whether avoiding cluster profiler helps.
+# Result: lightgcn rank_delta=-1614 (best fake-user result but still very negative).
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper,camouflaguer,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 15 \
+  --camouflaguer-actions 10 \
+  --output outputs/experiments/exp_dense_profiler_benchmark_allroles.json
+
+# Exp 5 — Warmup (6 steps dense cluster profiler) then snipers, all roles injected
+# Uses --sniper-start-step 6: no snipers for first 6 steps, then 3 snipers for steps 6-16.
+# Tests whether sequencing warmup BEFORE snipers creates better graph connectivity.
+# Result: lightgcn rank_delta=-1611 (near-identical to Exp 4; warmup ordering doesn't help).
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 16 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper,camouflaguer,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --sniper-start-step 6 \
+  --profiler-actions 15 \
+  --camouflaguer-actions 10 \
+  --profiler-use-cluster \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --output outputs/experiments/exp_dense_warmup6_then_sniper.json
+
+# Exp 6 — Warmup (6 steps dense benchmark profiler) then snipers, profiler+sniper only
+# Avoids camouflageur-induced competitor boosting entirely.
+# Result: lightgcn rank_delta=-1973 (worse than Exp 4; fewer total interactions hurts).
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 16 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --sniper-start-step 6 \
+  --profiler-actions 15 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --output outputs/experiments/exp_dense_warmup6_profiler_sniper_only.json
+
+# ---- Clone real-user profiles onto fake agents: LightGCN/NGCF offline transfer ----
+# Strategy: copy full interaction history of a real segment user onto each fake agent_N ID.
+# The victim model retrains with these cloned histories, giving fake agents real graph
+# connectivity (established node degree, embedding proximity to target neighbourhood).
+# All experiments use the same settings as the dense-profiler baseline for fair comparison.
+
+# Clone Exp 1 — 4 agents, 12 steps (direct comparison baseline)
+# Result: lightgcn +133 (norm +0.0137), ngcf +98 (norm +0.0101) — POSITIVE for both.
+# Contrast with fake-user baseline: lightgcn -2141.  Clone flips sign completely.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --clone-segment-users-to-agents \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --output outputs/experiments/exp_clone_fresh_4a_12s.json
+
+# Clone Exp 2 — 4 agents, 24 steps (2x more sniper steps)
+# Result: lightgcn +282 (norm +0.0289), ngcf +130 — delta doubles with 2x steps.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 24 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --clone-segment-users-to-agents \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --output outputs/experiments/exp_clone_fresh_4a_24s.json
+
+# Clone Exp 3 — 8 agents, 24 steps (more agents; defence rejection limits actual interactions)
+# Result: lightgcn +37, ngcf -23 — defence system flags many snipers; fewer accepted.
+# Note: only 47 sniper interactions accepted despite 8 agents x 24 steps budget.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 24 \
+  --goal-rank 3 \
+  --num-agents 8 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 6 \
+  --clone-segment-users-to-agents \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --output outputs/experiments/exp_clone_fresh_8a_24s.json

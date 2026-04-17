@@ -117,6 +117,11 @@ class RuleBasedCoordinatorPolicy:
 
     agent_order: Sequence[str] | None = None
     max_snipers: int = 1
+    # Warmup period: keep all agents in profiler/camouflageur for this many steps
+    # before allowing any snipers.  Useful for dense-profiler mode where fake users
+    # need to accumulate graph-neighbourhood edges first.  Default 0 = no warmup
+    # (snipers allowed from step 2 as before).
+    sniper_start_step: int = 0
 
     @staticmethod
     def _black_box_suspicion(observation: CoordinatorObservation, agent_id: str) -> float:
@@ -184,7 +189,7 @@ class RuleBasedCoordinatorPolicy:
                 assignments[aid].rationale = "Build target-domain trust embedding before payload delivery."
             return assignments
 
-        if step == 2:
+        if step == 2 and step >= self.sniper_start_step:
             # Prefer keeping agent 0 as a background camouflaguer, but guarantee at least one sniper
             # even when running with a small number of agents (e.g., 1–2).
             sniper_pool = list(self.agent_order[1:]) or [self.agent_order[0]]
@@ -223,7 +228,7 @@ class RuleBasedCoordinatorPolicy:
             reverse=True,
         )
 
-        if observation.target_rank > 5 and ranked:
+        if observation.target_rank > 5 and ranked and step >= self.sniper_start_step:
             max_snipers = max(0, int(self.max_snipers))
             for best in ranked[:max_snipers]:
                 assignments[best].role = AgentRole.SNIPER

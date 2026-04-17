@@ -67,6 +67,13 @@ class WorkerPolicyConfig:
     # proximity building); "large" = many real users (established graph connections,
     # lighter profiling/camouflage needed before snipers fire).
     lightgcn_budget: str = "small"
+    # Dense-profiler mode: build a richer fake-user profile before the sniper fires.
+    # Increases graph connectivity for cold-start fake users attacking degree-normalised
+    # models (LightGCN/NGCF) without requiring real user IDs or cloned histories.
+    # When profiler_use_cluster=True the profiler always draws from target_cluster_items
+    # (not benchmark/popular items), regardless of victim_model_class, so the fake user
+    # accumulates edges in the target neighbourhood before the sniper action.
+    profiler_use_cluster: bool = False
 
 
 class WorkerAgent:
@@ -891,8 +898,10 @@ class WorkerAgent:
         effective_class = f"lightgcn_{budget}" if victim_class == "lightgcn_style" else victim_class
 
         if role == AgentRole.PROFILER:
-            if effective_class == "lightgcn_small":
+            if effective_class == "lightgcn_small" or self.config.profiler_use_cluster:
                 # Build graph proximity: use cluster items (exclude target).
+                # Triggered either by lightgcn_small budget mode or by the explicit
+                # --profiler-use-cluster flag (dense-profiler mode for fake users).
                 focus = [i for i in ctx.target_cluster_items[:50] if str(i) != str(ctx.target_item_id)]
             else:
                 focus = list(ctx.benchmark_items[:50])

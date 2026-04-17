@@ -217,6 +217,7 @@ def _build_coordinator_and_workers(
         policy = RuleBasedCoordinatorPolicy(
             agent_order=agent_ids,
             max_snipers=max_snipers,
+            sniper_start_step=int(getattr(args, "sniper_start_step", 0)),
         )
     else:
         if args.coordinator_policy == "openai":
@@ -290,6 +291,9 @@ def _build_coordinator_and_workers(
         graph_sniper_neighbor_actions=int(getattr(args, "graph_sniper_neighbor_actions", 3)),
         graph_sniper_include_target=bool(getattr(args, "graph_sniper_include_target", True)),
         lightgcn_budget=str(getattr(args, "lightgcn_budget", "small")).lower(),
+        profiler_actions=int(getattr(args, "profiler_actions", 3)),
+        camouflaguer_actions=int(getattr(args, "camouflaguer_actions", 2)),
+        profiler_use_cluster=bool(getattr(args, "profiler_use_cluster", False)),
     )
     workers = build_worker_pool(
         agent_ids,
@@ -1585,6 +1589,39 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_transfer.add_argument(
+        "--profiler-actions",
+        type=int,
+        default=3,
+        help=(
+            "Number of items each profiler agent rates per step (default: 3). "
+            "Increasing this (e.g. to 15) gives fake users denser graph connectivity "
+            "before the sniper fires, which improves attack effectiveness against "
+            "degree-normalised models like LightGCN without requiring real user IDs."
+        ),
+    )
+    p_transfer.add_argument(
+        "--camouflaguer-actions",
+        type=int,
+        default=2,
+        help=(
+            "Number of items each camouflaguer agent rates per step (default: 2). "
+            "Increasing this (e.g. to 10) further densifies fake user profiles in the "
+            "target cluster neighbourhood before the sniper fires."
+        ),
+    )
+    p_transfer.add_argument(
+        "--profiler-use-cluster",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Force profiler agents to draw items from the target cluster neighbourhood "
+            "instead of globally popular benchmark items, regardless of victim model hint. "
+            "Combine with --profiler-actions 15 --camouflaguer-actions 10 (dense-profiler "
+            "mode) to give cold-start fake users meaningful graph connectivity for "
+            "LightGCN/NGCF attacks without cloning real user histories."
+        ),
+    )
+    p_transfer.add_argument(
         "--episode-model",
         choices=["surrogate", "lightgcn", "neumf", "sequential"],
         default="surrogate",
@@ -1663,6 +1700,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=1,
         help="For rule-based coordinator: maximum number of snipers to assign per step when target rank is still > 5.",
+    )
+    p_transfer.add_argument(
+        "--sniper-start-step",
+        type=int,
+        default=0,
+        help=(
+            "Warmup period: keep all agents in profiler/camouflageur roles for this many steps "
+            "before allowing any snipers (default: 0 = snipers allowed from step 2 as normal). "
+            "Use with --profiler-use-cluster --profiler-actions N to let fake users accumulate "
+            "dense cluster-neighbourhood edges before the sniper payload fires. Combine with "
+            "--transfer-attack-roles sniper,camouflaguer,profiler to include warmup interactions "
+            "in the offline training set so fake users arrive with real graph connectivity."
+        ),
     )
     p_transfer.add_argument("--target-device", default="cpu")
     p_transfer.add_argument("--target-lightgcn-layers", type=int, default=2)
