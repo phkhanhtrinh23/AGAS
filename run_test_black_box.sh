@@ -880,3 +880,68 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --target-batch-size 512 \
   --no-stop-on-goal \
   --output outputs/experiments/exp_clone_fresh_8a_24s.json
+
+# ---- Clone + OpenAI coordinator + OpenAI workers ----
+
+# OpenAI Clone 4a×12s
+# Result: lightgcn +141 (norm +0.0145), ngcf +222 (norm +0.0228)
+# NGCF stronger than rule (222 vs 98) with fewer accepted interactions (27 vs 49).
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy openai \
+  --worker-policy openai \
+  --llm-model gpt-4o-mini \
+  --openai-api-key "${OPENAI_API_KEY}" \
+  --prompt-root prompts \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --clone-segment-users-to-agents \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --output outputs/experiments/exp_clone_openai_4a_12s.json
+
+# OpenAI Clone 4a×24s
+# Result: lightgcn +340 (norm +0.0349), ngcf +84 — best LightGCN result across all clone runs.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 24 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy openai \
+  --worker-policy openai \
+  --llm-model gpt-4o-mini \
+  --openai-api-key "${OPENAI_API_KEY}" \
+  --prompt-root prompts \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --clone-segment-users-to-agents \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --output outputs/experiments/exp_clone_openai_4a_24s.json
