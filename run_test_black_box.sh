@@ -945,3 +945,561 @@ PYTHONPATH=src python -m agas.cli run-transfer \
   --target-batch-size 512 \
   --no-stop-on-goal \
   --output outputs/experiments/exp_clone_openai_4a_24s.json
+
+# ---- Co-occurrence bridge-item experiments ----
+# Research question: can selecting profiler items by co-occurrence with the target
+# create genuine 2-hop paths (fake_user→bridge→segment_user→target) and beat
+# cold-start fake users without cloning real user histories?
+
+# Exp: Co-occurrence bridge items, sniper+profiler training rows injected.
+# 15 profiler actions from bridge-item pool; all roles injected.
+# Result: lightgcn rank_delta=-1319, ngcf rank_delta=-7853 (214 attack interactions).
+# Best fake-user LightGCN result so far; bridge items improve 2-hop graph connectivity.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 15 \
+  --camouflaguer-actions 5 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_cooccurrence_bridge_sniper_profiler.json
+
+# Exp: Co-occurrence bridge items, sniper-only training rows (baseline comparison).
+# Same bridge-item profiler pool but only sniper edges go into victim model training.
+# Result: lightgcn rank_delta=-2107, ngcf rank_delta=-970 (60 attack interactions).
+# Without profiler rows in training, bridge-item episode selection gives no benefit.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 15 \
+  --camouflaguer-actions 5 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_cooccurrence_bridge_sniper_only.json
+
+# ---- Scale experiments: how many agents needed to bypass defense with fake users? ----
+
+# Bridge pool size sweep (4 agents): more bridge items = self-inflicted degree inflation
+# Result: 60 items (delta=-1319) > 120 items (delta=-1990) > 200 items (delta=-1735)
+# Sweet spot is ~60 bridge items (profiler-actions=15); more items dilutes the sniper edge.
+
+# Exp: 200 bridge items (profiler-actions=50)
+# Result: lightgcn rank_delta=-1735, ngcf rank_delta=-7791 (495 attack interactions)
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 50 \
+  --camouflaguer-actions 5 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_cooccurrence_bridge200_sniper_profiler.json
+
+# Exp: 120 bridge items (profiler-actions=30)
+# Result: lightgcn rank_delta=-1990, ngcf rank_delta=-7757 (354 attack interactions)
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 4 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 30 \
+  --camouflaguer-actions 5 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_cooccurrence_bridge120_sniper_profiler.json
+
+# Exp: 150 agents, full defense — defense quarantines nearly all (group-collusion trigger)
+# Result: lightgcn rank_delta=-6198 (only 193 interactions accepted from 150 agents)
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 150 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 15 \
+  --camouflaguer-actions 5 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_cooccurrence_150agents.json
+
+# Exp: 150 agents, defense disabled — scale works when defense is off
+# Result: lightgcn rank_delta=+932 (rank 1082->150) — successful attack
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 12 \
+  --goal-rank 3 \
+  --num-agents 150 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 3 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 15 \
+  --camouflaguer-actions 5 \
+  --profiler-bridge-method cooccurrence \
+  --no-quarantine-on-group-collusion \
+  --no-quarantine-on-spike-alert \
+  --output outputs/experiments/exp_cooccurrence_150agents_nodefense.json
+
+# ---- Dynamic role-switching experiments: bypass defense with scale + role diversity ----
+# Key insight: stagger snipers (--sniper-start-step), use all 4 roles, more steps.
+# Defense detects synchronized behavior, not scale. Dynamic roles look like real users.
+
+# Exp: 80 agents, 36 steps, all roles, snipers from step 12
+# Result: lightgcn rank_delta=-1134 (1226 interactions accepted)
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 36 \
+  --goal-rank 3 \
+  --num-agents 80 \
+  --transfer-attack-roles sniper,profiler,camouflaguer \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 12 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 5 \
+  --camouflaguer-actions 8 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_80agents_36steps_allroles.json
+
+# Exp: 100 agents, 48 steps, inject sniper+profiler only, snipers from step 15
+# Camouflageur runs during episode for evasion but rows not injected into training.
+# Result: lightgcn rank_delta=-688, ngcf rank_delta=+417 (622 interactions)
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 48 \
+  --goal-rank 3 \
+  --num-agents 100 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 15 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 5 \
+  --camouflaguer-actions 8 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_100agents_48steps_sniperprofiler.json
+
+# Exp: 150 agents, 60 steps, inject sniper+profiler, snipers from step 20 — SUCCESSFUL ATTACK
+# Dynamic role switching bypasses group-collusion defense. Scale creates enough 2-hop paths.
+# Result: lightgcn rank_delta=+1026 (rank 1082->56), ngcf rank_delta=+11 (721 interactions)
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 60 \
+  --goal-rank 3 \
+  --num-agents 150 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 20 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 5 \
+  --camouflaguer-actions 8 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_150agents_60steps_sniperprofiler.json
+
+# ---- All-roles injection with noise-only camouflageur (realistic profile diversity) ----
+# Camouflageur fixed to use noise_items only (was using target_cluster_items = competitor boost).
+# Research question: can all-roles injection work at scale with non-competing camouflage?
+
+# Exp: 150 agents, 60 steps, all roles, cluster camouflage (bug: boosts competitors)
+# Result: lightgcn rank_delta=-5830 (1997 interactions — camou drowns sniper signal)
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 60 \
+  --goal-rank 3 \
+  --num-agents 150 \
+  --transfer-attack-roles sniper,profiler,camouflaguer \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 20 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 5 \
+  --camouflaguer-actions 8 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_150agents_60steps_allroles.json
+
+# Exp: 150 agents, 60 steps, all roles, noise camouflage (fixed), camou=3
+# Result: lightgcn rank_delta=-1137 (1205 interactions)
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 60 \
+  --goal-rank 3 \
+  --num-agents 150 \
+  --transfer-attack-roles sniper,profiler,camouflaguer \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 20 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 5 \
+  --camouflaguer-actions 3 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_150agents_60steps_allroles_noisecamou.json
+
+# Exp: 200 agents, 80 steps, all roles, noise camouflage, camou=1 (minimum)
+# Result: lightgcn rank_delta=-3833 (1132 interactions) — more scale doesn't help all-roles
+# Root cause: even minimal camou grows deg(fake_user), diluting sniper edge weight.
+# Only ~12% of accepted interactions are sniper rows — not enough concentrated signal.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 80 \
+  --goal-rank 3 \
+  --num-agents 200 \
+  --transfer-attack-roles sniper,profiler,camouflaguer \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 25 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 5 \
+  --camouflaguer-actions 1 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_200agents_80steps_allroles_noisecamou.json
+
+# ---- Warm-start target: gradient vs co-occurrence bridge (item 593, 279 ratings) ----
+# Research question: does gradient bridge selection work better when target is warm-start?
+# Target: item 593 "Silence of the Lambs" (279 ratings vs 51 for item 1215).
+# A stable target_emb reduces spurious alignment of zero-degree items with target.
+
+# Gradient bridge, warm target 593
+# Result: lightgcn rank_delta=+302, ngcf rank_delta=+4322 (rank 4323->1, HR@10=1.0)
+# Gradient WORKS on warm target — stable target_emb means gradients are reliable signals.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 593 \
+  --target-keyword horror \
+  --num-steps 60 \
+  --goal-rank 3 \
+  --num-agents 150 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 20 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 5 \
+  --camouflaguer-actions 8 \
+  --profiler-bridge-method gradient \
+  --output outputs/experiments/exp_gradient_warmtarget593.json
+
+# Co-occurrence bridge, warm target 593 (baseline comparison)
+# Result: lightgcn rank_delta=-1907, ngcf rank_delta=+4247
+# Co-occurrence fails LightGCN here — item 593 is already a popular bridge item itself,
+# so its co-occurrence pool overlaps heavily with strong competitors.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 593 \
+  --target-keyword horror \
+  --num-steps 60 \
+  --goal-rank 3 \
+  --num-agents 150 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 20 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 5 \
+  --camouflaguer-actions 8 \
+  --profiler-bridge-method cooccurrence \
+  --output outputs/experiments/exp_cooccurrence_warmtarget593.json
+
+# Gradient bridge, item 1215 (cold-ish target, 51 ratings), 150a×60s
+# Result: lightgcn rank_delta=+1046 (rank 1082->36), ngcf rank_delta=-229 (757 interactions)
+# At 150-agent scale, gradient matches co-occurrence for LightGCN but hurts NGCF.
+# Earlier gradient failures (4 agents) were a scale problem, not a method problem.
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 60 \
+  --goal-rank 3 \
+  --num-agents 150 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 20 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 5 \
+  --camouflaguer-actions 8 \
+  --profiler-bridge-method gradient \
+  --output outputs/experiments/exp_gradient_150a60s_item1215.json
+
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 1215 \
+  --target-keyword horror \
+  --num-steps 60 \
+  --goal-rank 3 \
+  --num-agents 150 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 20 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 5 \
+  --camouflaguer-actions 8 \
+  --profiler-bridge-method auto \
+  --profiler-bridge-auto-threshold 100 \
+  --output outputs/experiments/exp_auto_item1215.json
+
+PYTHONPATH=src python -m agas.cli run-transfer \
+  --transfer-mode option-a \
+  --processed-root processed \
+  --dataset ml-latest-small \
+  --max-interactions 10000 \
+  --target-item-id 593 \
+  --target-keyword horror \
+  --num-steps 60 \
+  --goal-rank 3 \
+  --num-agents 150 \
+  --transfer-attack-roles sniper,profiler \
+  --coordinator-policy rule \
+  --worker-policy rule \
+  --episode-model lightgcn \
+  --victim-model-hint mf \
+  --probe-steps 0 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 20 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items \
+  --target-epochs 3 \
+  --target-embedding-dim 32 \
+  --target-batch-size 512 \
+  --no-stop-on-goal \
+  --profiler-actions 5 \
+  --camouflaguer-actions 8 \
+  --profiler-bridge-method auto \
+  --profiler-bridge-auto-threshold 100 \
+  --output outputs/experiments/exp_auto_item593.json

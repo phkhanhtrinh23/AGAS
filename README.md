@@ -693,6 +693,90 @@ agas run-transfer \
   --target-device cpu
 ```
 
+### Bridge-item profiler selection (`--profiler-bridge-method`)
+
+When attacking LightGCN or NGCF, cold-start fake users (fresh accounts with no history) contribute almost no signal through graph propagation. A fake user with only a sniper edge to the target has:
+
+```
+propagated_embedding ≈ random_init + target_emb / sqrt(deg_target)
+```
+
+The second term is tiny because `deg_target` (number of users who rated the target) is large. The attack effectively fails because the fake user's embedding doesn't reinforce the target's neighbourhood.
+
+**Bridge items** fix this by giving each fake user a set of items to rate during the profiler phase that create 2-hop paths to the target:
+
+```
+fake_user → bridge_item → segment_user → target_item
+```
+
+`segment_user` is a real user who rated both `bridge_item` and the target. Through these paths, LightGCN's message passing propagates signal from the target's real neighbourhood into the fake user's embedding.
+
+Enable bridge-item selection with:
+
+```bash
+agas run-transfer \
+  --episode-model lightgcn \
+  --profiler-bridge-method cooccurrence \   # or: gradient
+  --profiler-actions 5 \
+  --transfer-attack-roles sniper,profiler \
+  ...
+```
+
+#### Method: `cooccurrence` (recommended)
+
+Selects items most frequently co-rated with the target by users who positively rated the target (rating ≥ 4.0). Steps:
+
+1. **Find segment users** — all users who rated `target_item` with rating ≥ 4.0.
+2. **Collect their other ratings** — every other item those users also rated.
+3. **Count co-occurrence** — for each item, count how many segment users rated it.
+4. **Return top-n** — items sorted by descending co-occurrence count.
+
+Items ranked higher have more 2-hop paths to the target, making the bridge stronger. For example, a Sci-Fi film rated by 30 horror fans provides 30 separate paths vs. 1 path for a film rated by only 1 horror fan.
+
+**Requires:** access to the interaction dataset used to train the episode model (standard grey-box transfer attack assumption).
+
+#### Method: `gradient`
+
+Ranks candidate items by `d(score(fake_user, target)) / d(w_j)` computed in one forward+backward pass on the frozen LightGCN. This is a greedy analogue of GSPAttack's Gumbel-Top-k. Less reliable than co-occurrence in practice because:
+
+- A single pass cannot distinguish stable gradients from spurious alignment with random item embeddings.
+- Items with no graph connections (deg = 0) can appear to align with the target by chance.
+
+Prefer `cooccurrence` unless you specifically need the gradient formulation.
+
+#### Key flags
+
+| Flag | Default | Description |
+|---|---|---|
+| `--profiler-bridge-method` | `none` | `cooccurrence` or `gradient`; `none` falls back to cluster/benchmark items |
+| `--profiler-actions` | `3` | Items rated per profiler call; also controls bridge pool size (`max(50, n×4)`) |
+| `--sniper-start-step` | `0` | Delay sniper role until this step; lets profiler build bridge connections first |
+| `--transfer-attack-roles` | `sniper` | Include `profiler` to inject bridge-item rows into victim model retraining |
+
+#### Recommended configuration for LightGCN attacks (no user cloning)
+
+```bash
+agas run-transfer \
+  --transfer-mode option-a \
+  --episode-model lightgcn \
+  --num-agents 150 \
+  --num-steps 60 \
+  --transfer-attack-roles sniper,profiler \
+  --profiler-bridge-method cooccurrence \
+  --profiler-actions 5 \
+  --camouflaguer-actions 8 \
+  --rule-max-snipers 5 \
+  --sniper-start-step 20 \
+  --target-models lightgcn,ngcf \
+  --transfer-candidate-set all_items
+```
+
+This configuration (150 agents, 60 steps, snipers withheld until step 20) achieves LightGCN rank delta **+1026** on MovieLens-small (rank 1082 → 56) with full defense enabled, without cloning any real user histories. The key mechanisms:
+
+- **Dynamic role switching** — agents spend steps 0–19 as profiler/camouflageur building diverse histories; the defense sees varied behaviour rather than a synchronized mass-rating event.
+- **Staggered snipers** (`--rule-max-snipers 5`) — only 5 agents rate the target per step, staying below the group-collusion detection threshold.
+- **Scale** — 150 agents create enough 2-hop paths collectively that graph propagation shifts the target's embedding neighbourhood even under degree normalization.
+
 `src/agas/agents/defender.py` implements `DefenseMonitorAgent`, which:
 
 - records hidden defense interventions

@@ -137,3 +137,140 @@ class LightGCNRecommender(BaseTargetRecommender):
         items = item_emb[item_indices]
         scores = users @ items.T
         return scores.mean(dim=0)
+
+    def select_bridge_items_by_gradient(
+        self,
+        target_item_id: str,
+        candidate_item_ids: list[str],
+        n: int = 20,
+    ) -> list[str]:
+        """Rank candidate items by gradient of target score w.r.t. a soft fake-user edge.
+
+        A cold-start fake user's propagated embedding is:
+            u_prop ≈ mean_layers( u_init + sum_j w_j/sqrt(deg_j) * item_prop[j] )
+        The gradient d(score(u, target))/d(w_j) selects items whose propagated
+        embedding points most strongly toward the target's neighbourhood — these
+        create the strongest 2-hop paths without requiring real user histories.
+
+        This is the greedy (single-pass) analogue of GSPAttack's Gumbel-Top-k:
+        Gumbel adds end-to-end joint optimisation of all k items; here we use
+        independent gradient ranking which is much faster and sufficient for
+        episodic profile building.
+
+        Args:
+            target_item_id: String item ID of the attack target.
+            candidate_item_ids: Pool of items to rank.
+            n: Number of top items to return.
+
+        Returns:
+            Up to n item IDs ranked by descending gradient magnitude.
+        """
+        if self.model is None or self._norm_adj is None:
+            return candidate_item_ids[:n]
+
+        target_idx = self.item_to_idx.get(str(target_item_id))
+        if target_idx is None:
+            return candidate_item_ids[:n]
+
+        # Map candidate IDs to model indices; keep only items that actually appear
+        # in the training graph (deg > 0).  Zero-degree items have random uninitialised
+        # embeddings and no graph connectivity — selecting them would be pure noise.
+        num_users = self.model.num_users
+        adj_indices = self._norm_adj.coalesce().indices()
+        col_ids = adj_indices[1].cpu()
+        observed_item_nodes: set[int] = set((col_ids[col_ids >= num_users] - num_users).tolist())
+
+        valid: list[tuple[str, int]] = [
+            (item_id, self.item_to_idx[str(item_id)])
+            for item_id in candidate_item_ids
+            if (
+                str(item_id) in self.item_to_idx
+                and str(item_id) != str(target_item_id)
+                and self.item_to_idx[str(item_id)] in observed_item_nodes
+            )
+        ]
+        if not valid:
+            return candidate_item_ids[:n]
+
+        device = next(self.model.parameters()).device
+
+        with torch.no_grad():
+            _, item_emb_frozen = self.model.propagate(self._norm_adj)
+
+        # Propagated target embedding (frozen).
+        target_emb = item_emb_frozen[target_idx].detach()  # (D,)
+
+        # Soft edge weights over candidate items: w_j ≥ 0, initialised to 1.
+        # The fake user's L1-propagated representation is:
+        #   u_prop1 = sum_j w_j / sqrt(sum(w) * deg_j) * item_emb[j]
+        # Gradient d(u_prop1 · target_emb)/d(w_j) tells which item to add.
+        cand_indices = torch.tensor([idx for _, idx in valid], device=device)
+        cand_embs = item_emb_frozen[cand_indices].detach()  # (C, D)
+
+        # Degree of each candidate item in current graph.
+        # Count nnz per item-node column (cols offset by num_users).
+        col_ids = adj_indices[1]  # destination nodes (already on device)
+        item_node_ids = cand_indices + num_users  # item nodes in the bipartite graph
+        deg_cand = torch.zeros(len(valid), device=device)
+        for k, item_node in enumerate(item_node_ids):
+            deg_cand[k] = float((col_ids == item_node).sum())
+        deg_cand = deg_cand.clamp(min=1.0)
+
+        # Soft weights (all ones = uniform start).
+        w = torch.ones(len(valid), device=device, requires_grad=True)
+
+        # u_prop = sum_j (w_j / sqrt(sum(w) * deg_j)) * item_emb[j]
+        # To favour well-connected items (higher degree = stronger 2-hop paths)
+        # we weight by sqrt(deg_j) instead of the raw normalised form, so the
+        # gradient score becomes: sim(item_j, target) * sqrt(deg_j).  This
+        # avoids selecting random-embedding, zero-observed items.
+        norm_w = w.sum().clamp(min=1e-8)
+        scale = w * deg_cand.sqrt() / norm_w             # (C,) — upweight high-deg
+        u_prop = (scale.unsqueeze(1) * cand_embs).sum(0)  # (D,)
+        score = (u_prop * target_emb).sum()
+        score.backward()
+
+        grads = w.grad.detach().cpu().numpy()            # (C,)
+        ranked = sorted(zip([item_id for item_id, _ in valid], grads),
+                        key=lambda x: -x[1])
+        return [item_id for item_id, _ in ranked[:n]]
+
+    def select_bridge_items_by_cooccurrence(
+        self,
+        target_item_id: str,
+        positive_threshold: float = 4.0,
+        n: int = 50,
+    ) -> list[str]:
+        """Select bridge items by co-occurrence with target among segment users.
+
+        Finds items most frequently rated alongside the target by users who
+        positively rated the target.  These create the strongest 2-hop paths:
+            fake_user → bridge_item → segment_user → target
+        without requiring gradient computation.
+
+        Args:
+            target_item_id: String item ID of the attack target.
+            positive_threshold: Rating threshold to define segment users.
+            n: Number of top co-occurring items to return.
+
+        Returns:
+            Item IDs sorted by descending co-occurrence count with the target.
+        """
+        if self.interactions is None:
+            return []
+
+        df = self.interactions.copy()
+        df["item_id"] = df["item_id"].astype(str)
+        df["user_id"] = df["user_id"].astype(str)
+        target = str(target_item_id)
+
+        segment_mask = (df["item_id"] == target) & (df["rating"] >= positive_threshold)
+        segment_users: set[str] = set(df.loc[segment_mask, "user_id"].tolist())
+        if not segment_users:
+            segment_users = set(df.loc[df["item_id"] == target, "user_id"].tolist())
+        if not segment_users:
+            return []
+
+        seg_df = df[df["user_id"].isin(segment_users) & (df["item_id"] != target)]
+        cooc = seg_df.groupby("item_id").size().sort_values(ascending=False)
+        return cooc.index.astype(str).tolist()[:n]

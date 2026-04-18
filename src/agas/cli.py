@@ -917,6 +917,24 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     seed=args.seed,
                 )
 
+        bridge_method = getattr(args, "profiler_bridge_method", "none")
+        if bridge_method in ("cooccurrence", "gradient", "auto"):
+            n_bridge = max(50, int(getattr(args, "profiler_actions", 3)) * 4)
+            auto_threshold = int(getattr(args, "profiler_bridge_auto_threshold", 100))
+            n_found = len(base_env.compute_bridge_items(n=n_bridge, method=bridge_method, auto_threshold=auto_threshold))
+            if n_found:
+                print(f"Bridge-item selection ({bridge_method}): {n_found} items selected for profiler pool.")
+            else:
+                print(f"Bridge-item selection ({bridge_method}): episode model is not LightGCN or not yet fitted — falling back to cluster/benchmark items.")
+        elif bool(getattr(args, "profiler_gradient_selection", False)):
+            # Legacy flag — kept for backward compat
+            n_bridge = max(50, int(getattr(args, "profiler_actions", 3)) * 4)
+            n_found = len(base_env.compute_bridge_items(n=n_bridge, method="gradient"))
+            if n_found:
+                print(f"Gradient bridge-item selection: {n_found} items selected for profiler pool.")
+            else:
+                print("Gradient bridge-item selection: episode model is not LightGCN or not yet fitted — falling back to cluster/benchmark items.")
+
         coordinator, workers = _build_coordinator_and_workers(
             args=args,
             agent_ids=agent_ids,
@@ -1619,6 +1637,43 @@ def build_parser() -> argparse.ArgumentParser:
             "Combine with --profiler-actions 15 --camouflaguer-actions 10 (dense-profiler "
             "mode) to give cold-start fake users meaningful graph connectivity for "
             "LightGCN/NGCF attacks without cloning real user histories."
+        ),
+    )
+    p_transfer.add_argument(
+        "--profiler-gradient-selection",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Select profiler items by gradient of target score w.r.t. fake-user edge weights "
+            "in the LightGCN episode model (greedy analogue of GSPAttack's Gumbel-Top-k). "
+            "One forward+backward pass on the frozen model ranks all items by how strongly "
+            "adding that edge pushes the fake user's propagated embedding toward the target "
+            "neighbourhood — creating 2-hop paths without cloning real user histories. "
+            "Only effective when --episode-model lightgcn is set. "
+            "Combine with --profiler-actions 15 --transfer-attack-roles sniper,profiler."
+        ),
+    )
+    p_transfer.add_argument(
+        "--profiler-bridge-method",
+        choices=["none", "cooccurrence", "gradient", "auto"],
+        default="none",
+        help=(
+            "Strategy for selecting profiler bridge items to create 2-hop paths to the target. "
+            "'cooccurrence': items most frequently co-rated with target by segment users — best for cold/tail targets. "
+            "'gradient': ranks items by d(score(fake_user,target))/d(w_j) on frozen LightGCN — best for warm/popular targets. "
+            "'auto': selects cooccurrence if target ratings < --profiler-bridge-auto-threshold, else gradient. "
+            "Only effective when --episode-model lightgcn is set."
+        ),
+    )
+    p_transfer.add_argument(
+        "--profiler-bridge-auto-threshold",
+        type=int,
+        default=100,
+        help=(
+            "Rating count threshold for --profiler-bridge-method auto. "
+            "If target item has >= this many ratings, gradient is used; otherwise cooccurrence. "
+            "Default 100. Rationale: warm targets (many ratings) have stable LightGCN embeddings "
+            "so gradient gradients are reliable; cold targets risk spurious alignment."
         ),
     )
     p_transfer.add_argument(

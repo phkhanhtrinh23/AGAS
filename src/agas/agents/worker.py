@@ -33,6 +33,10 @@ class WorkerContext:
     target_cluster_items: Sequence[str]
     competitor_items: Sequence[str]
     noise_items: Sequence[str]
+    # Gradient-selected bridge items: items whose propagated LightGCN embedding
+    # points most strongly toward the target neighbourhood.  Empty list when
+    # gradient selection is disabled or episode model is not LightGCN.
+    bridge_items: Sequence[str] = ()
 
 
 @dataclass
@@ -287,9 +291,8 @@ class WorkerAgent:
             A list of camouflage rating actions.
         """
 
-        focus_items = list(ctx.target_cluster_items)
-        if self.state.risk > 1.0:
-            focus_items = list(ctx.noise_items) + focus_items
+        # Always use noise items (unrelated genres) to avoid boosting competitors.
+        focus_items = list(ctx.noise_items) if ctx.noise_items else list(ctx.benchmark_items)
         sampled = self._sample_items(focus_items, self.config.camouflaguer_actions)
         out = []
         if self.config.implicit_safe:
@@ -898,10 +901,14 @@ class WorkerAgent:
         effective_class = f"lightgcn_{budget}" if victim_class == "lightgcn_style" else victim_class
 
         if role == AgentRole.PROFILER:
-            if effective_class == "lightgcn_small" or self.config.profiler_use_cluster:
+            if ctx.bridge_items:
+                # Gradient-selected bridge items take priority when available.
+                # These are the items whose LightGCN propagated embedding points
+                # most strongly toward the target neighbourhood — stronger 2-hop
+                # paths than random cluster or benchmark items.
+                focus = [i for i in ctx.bridge_items if str(i) != str(ctx.target_item_id)]
+            elif effective_class == "lightgcn_small" or self.config.profiler_use_cluster:
                 # Build graph proximity: use cluster items (exclude target).
-                # Triggered either by lightgcn_small budget mode or by the explicit
-                # --profiler-use-cluster flag (dense-profiler mode for fake users).
                 focus = [i for i in ctx.target_cluster_items[:50] if str(i) != str(ctx.target_item_id)]
             else:
                 focus = list(ctx.benchmark_items[:50])
@@ -909,7 +916,10 @@ class WorkerAgent:
                 focus = [str(ctx.target_item_id)] + focus
             return list(dict.fromkeys(focus)), self.config.profiler_actions
         if role == AgentRole.CAMOUFLAGEUR:
-            focus = list(ctx.target_cluster_items[:40]) + list(ctx.noise_items[:20])
+            # Use noise items (unrelated genres) only — cluster items boost competitors.
+            focus = list(ctx.noise_items[:60])
+            if not focus:
+                focus = list(ctx.benchmark_items[:60])
             if self.config.implicit_safe:
                 focus = [str(ctx.target_item_id)] + focus
             return list(dict.fromkeys(focus)), self.config.camouflaguer_actions

@@ -124,6 +124,8 @@ class AGASEnvironment:
         self.noise_items = self._resolve_noise_items()
         self.competitor_items = self._resolve_competitor_items()
         self.segment_user_ids = self._resolve_segment_users()
+        # Populated by compute_bridge_items() when gradient selection is enabled.
+        self.bridge_items: list[str] = []
 
         self._ensure_target_item_exists()
         self.current_rank, self.total_candidates = self._target_rank()
@@ -259,6 +261,60 @@ class AGASEnvironment:
             candidate_items=candidate,
         )
 
+    def compute_bridge_items(
+        self,
+        n: int = 50,
+        method: str = "cooccurrence",
+        auto_threshold: int = 100,
+    ) -> list[str]:
+        """Select profiler items that create strong 2-hop paths to the target.
+
+        Args:
+            n: Number of bridge items to select.
+            method: ``"cooccurrence"`` ranks items by co-occurrence count with target
+                segment users.  ``"gradient"`` ranks by d(score)/d(w_j) on the frozen
+                LightGCN.  ``"auto"`` picks based on target rating count:
+                gradient when ratings >= auto_threshold (stable target embedding),
+                cooccurrence otherwise (avoids popular-competitor boosting).
+            auto_threshold: Rating count threshold for ``"auto"`` mode.
+
+        Returns:
+            Ordered list of item IDs (best bridge items first).
+        """
+        from agas.recsys.targets.lightgcn import LightGCNRecommender
+
+        if not isinstance(self.recommender, LightGCNRecommender):
+            return []
+
+        if method == "auto":
+            if self.recommender.interactions is not None:
+                df = self.recommender.interactions
+                target_ratings = int((df["item_id"].astype(str) == str(self.target_item_id)).sum())
+            else:
+                target_ratings = 0
+            method = "gradient" if target_ratings >= auto_threshold else "cooccurrence"
+            print(f"Auto bridge method: target has {target_ratings} ratings → using {method}")
+
+        try:
+            if method == "cooccurrence":
+                self.bridge_items = self.recommender.select_bridge_items_by_cooccurrence(
+                    target_item_id=self.target_item_id,
+                    n=n,
+                )
+            else:
+                if self.recommender.model is None or self.recommender._norm_adj is None:
+                    return []
+                all_items = list(self.recommender.item_to_idx.keys())
+                candidates = [i for i in all_items if str(i) != str(self.target_item_id)]
+                self.bridge_items = self.recommender.select_bridge_items_by_gradient(
+                    target_item_id=self.target_item_id,
+                    candidate_item_ids=candidates,
+                    n=n,
+                )
+        except Exception:
+            self.bridge_items = []
+        return self.bridge_items
+
     def build_worker_context(self) -> WorkerContext:
         """Expose candidate pools to workers.
 
@@ -272,6 +328,7 @@ class AGASEnvironment:
             target_cluster_items=self.target_cluster_item_ids,
             competitor_items=self.competitor_items,
             noise_items=self.noise_items,
+            bridge_items=self.bridge_items,
         )
 
     def observation(
