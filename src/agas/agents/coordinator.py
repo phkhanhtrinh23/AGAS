@@ -140,6 +140,15 @@ class RuleBasedCoordinatorPolicy:
             return 0.0
         return float(signal.get("suspected_filtering_score", 0.0))
 
+    @staticmethod
+    def _validator_flagged(observation: CoordinatorObservation, agent_id: str) -> bool:
+        """Return whether the profile validator flagged this agent this step."""
+
+        signal = observation.signals_by_agent.get(agent_id, {})
+        if not isinstance(signal, dict):
+            return False
+        return bool(signal.get("validator_flagged", False))
+
     def assign(
         self,
         observation: CoordinatorObservation,
@@ -238,6 +247,13 @@ class RuleBasedCoordinatorPolicy:
         for aid in support_pool[:3]:
             assignments[aid].role = AgentRole.CAMOUFLAGEUR
             assignments[aid].rationale = "Support trust camouflage and cluster alignment."
+
+        for aid in self.agent_order:
+            if self._validator_flagged(observation, aid):
+                assignments[aid].role = AgentRole.INACTIVE
+                assignments[aid].rationale = (
+                    "Profile validator flagged this agent; cool down to reduce detectability."
+                )
 
         return assignments
 
@@ -593,6 +609,34 @@ class Coordinator:
                 or memory_trigger
             ):
                 self._sniper_lockouts[aid] = max(self._sniper_lockouts.get(aid, 0), self.runtime_config.sniper_lock_steps)
+
+    def _apply_validator_guardrail(
+        self,
+        observation: CoordinatorObservation,
+        assignments: Dict[str, RoleAssignment],
+    ) -> Dict[str, RoleAssignment]:
+        """Force INACTIVE on agents flagged by ProfileValidator.
+
+        Works for any coordinator policy (rule-based or LLM): the episode
+        runner injects per-agent scores into ``signals_by_agent[aid]``
+        under ``validator_flagged``; this wrapper enforces the cool-down
+        consistently at the ``Coordinator`` layer.
+        """
+
+        for aid, assignment in list(assignments.items()):
+            signal = observation.signals_by_agent.get(aid, {})
+            if isinstance(signal, dict) and signal.get("validator_flagged", False):
+                assignments[aid] = RoleAssignment(
+                    step=assignment.step,
+                    agent_id=aid,
+                    role=AgentRole.INACTIVE,
+                    rationale=(
+                        "Profile validator flagged this agent "
+                        f"(aggregate={signal.get('validator', {}).get('aggregate', 'n/a')}); "
+                        "cool down to reduce detectability."
+                    ),
+                )
+        return assignments
 
     def _apply_lockouts(
         self,
@@ -977,6 +1021,7 @@ class Coordinator:
         assignments = self.policy.assign(observation, worker_states)
         self._update_sniper_lockouts(observation)
         assignments = self._apply_lockouts(observation, assignments)
+        assignments = self._apply_validator_guardrail(observation, assignments)
         assignments = self._ensure_profiler_presence(observation, worker_states, assignments)
         assignments = self._annotate_victim_class(assignments)
         self._last_assignments = assignments

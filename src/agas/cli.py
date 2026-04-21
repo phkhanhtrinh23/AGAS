@@ -748,6 +748,8 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
             stop_on_goal=args.stop_on_goal,
             trajectory_window=args.trajectory_window,
             coordinator_agent_memory=bool(args.coordinator_agent_memory),
+            profile_validator_enabled=bool(getattr(args, "profile_validator", False)),
+            profile_validator_threshold=float(getattr(args, "profile_validator_threshold", 0.7)),
         ),
     )
     result = runner.run()
@@ -968,6 +970,8 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 stop_on_goal=args.stop_on_goal,
                 trajectory_window=args.trajectory_window,
                 coordinator_agent_memory=bool(args.coordinator_agent_memory),
+                profile_validator_enabled=bool(getattr(args, "profile_validator", False)),
+                profile_validator_threshold=float(getattr(args, "profile_validator_threshold", 0.7)),
             ),
         )
         surrogate_result = runner.run()
@@ -1117,6 +1121,8 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                         stop_on_goal=args.stop_on_goal,
                         trajectory_window=args.trajectory_window,
                         coordinator_agent_memory=bool(args.coordinator_agent_memory),
+                        profile_validator_enabled=bool(getattr(args, "profile_validator", False)),
+                        profile_validator_threshold=float(getattr(args, "profile_validator_threshold", 0.7)),
                     ),
                 )
                 result = runner.run()
@@ -1219,6 +1225,8 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     stop_on_goal=args.stop_on_goal,
                     trajectory_window=args.trajectory_window,
                     coordinator_agent_memory=bool(args.coordinator_agent_memory),
+                    profile_validator_enabled=bool(getattr(args, "profile_validator", False)),
+                    profile_validator_threshold=float(getattr(args, "profile_validator_threshold", 0.7)),
                 ),
             )
             result = runner.run()
@@ -1302,6 +1310,11 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "episode_histories_by_target": episode_histories_by_target,
         "per_target_transfer_settings": per_target_settings,
         "attack_interactions_stats": attack_stats,
+        "profile_validator_enabled": bool(getattr(args, "profile_validator", False)),
+        "profile_validator_threshold": float(getattr(args, "profile_validator_threshold", 0.7)),
+        "profile_validator_scores": (
+            surrogate_result.profile_validator_scores if surrogate_result is not None else {}
+        ),
     }
 
     out_path = Path(args.output)
@@ -1380,6 +1393,23 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Include per-agent recent outcomes in coordinator observation.",
+    )
+    p_run.add_argument(
+        "--profile-validator",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Enable ProfileValidator guardrail. Computes per-agent suspicion score "
+            "(extremity + target-hit + collusion). Scores are injected into the "
+            "coordinator observation under signals_by_agent[aid]['validator']; "
+            "rule-based coordinator forces flagged agents to INACTIVE."
+        ),
+    )
+    p_run.add_argument(
+        "--profile-validator-threshold",
+        type=float,
+        default=0.7,
+        help="Aggregate validator score above which agents are forced to cool-down.",
     )
 
     p_run.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama"], default="openai")
@@ -1469,6 +1499,23 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Include per-agent recent outcomes in coordinator observation.",
+    )
+    p_transfer.add_argument(
+        "--profile-validator",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Enable ProfileValidator guardrail. Computes per-agent suspicion score "
+            "(extremity + target-hit + collusion). Scores are injected into the "
+            "coordinator observation under signals_by_agent[aid]['validator']; "
+            "rule-based coordinator forces flagged agents to INACTIVE."
+        ),
+    )
+    p_transfer.add_argument(
+        "--profile-validator-threshold",
+        type=float,
+        default=0.7,
+        help="Aggregate validator score above which agents are forced to cool-down.",
     )
 
     p_transfer.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama"], default="openai")

@@ -794,6 +794,174 @@ Per-role worker prompts are stored under `prompts/`:
 
 These prompt files are loaded only when worker policy is set to `openai` or `ollama`.
 
+### Unified memory mode (`--unified-memory`)
+
+By default each worker keeps its own rolling trajectory summary and the
+coordinator keeps a separate one. With `--unified-memory` enabled, a single
+bounded deque (`collections.deque(maxlen=--unified-memory-size)`, default 15)
+replaces both — one LLM plays both coordinator and every worker sequentially
+within a step, and every role assignment and worker action appends to the same
+shared buffer. Requires LLM coordinator **and** LLM workers.
+
+```bash
+agas run-transfer \
+  --coordinator-policy openai --worker-policy openai \
+  --llm-model gpt-5-mini --worker-llm-model gpt-5-mini \
+  --unified-memory --unified-memory-size 15 \
+  ...
+```
+
+Implementation: [src/agas/agents/unified_memory.py](src/agas/agents/unified_memory.py).
+The memory is attached to `LLMCoordinatorPolicy` and every `WorkerAgent`
+via `set_unified_memory(...)` in `_build_coordinator_and_workers`.
+
+#### Bridge-method sweep: unified vs separate memory (item 593, LightGCN, compact configs)
+
+Three sweeps, same target (horror movie, initial rank 944/9742),
+sniper+profiler roles only, `--transfer-candidate-set all_items`:
+
+| `--profiler-bridge-method` | rule-based (8a×10s) | gpt-5-mini separate (6a×8s) | gpt-5-mini unified (6a×8s) |
+|---|---:|---:|---:|
+| `none` | −721 | −3652 | **−231** |
+| `cooccurrence` | −1250 | +526 | **+556** |
+| `gradient` | +328 | −3643 | **+213** |
+| `auto` (thr=20) | **+421** | −3571 | −3682 |
+
+- **Rule-based, 8a×10s** (same ladder): `none −721`, `cooccurrence −1250`,
+  `gradient +328`, `auto +421`. With a tiny budget, the rule schedule floods
+  bridges efficiently; `none` and `cooccurrence` hurt because the few added
+  edges dilute the target's degree faster than they boost its embedding.
+- **LLM separate memory, 6a×8s**: only `cooccurrence +526` stayed positive;
+  `none −3652`, `gradient −3643`, `auto −3571` all collapsed. Without a
+  cooccurrence signal, separate per-agent memories let each LLM drift into
+  noisy snipes that shift LightGCN's embedding away from the target.
+- **LLM unified memory, 6a×8s**: `cooccurrence +556` (~6% better than
+  separate), `gradient +213`, `none −231`, `auto −3682` (~3% worse). The
+  shared deque helps the coordinator rein in runaway snipes in three of four
+  conditions — `none` and `gradient` recover to near-neutral — but `auto`
+  still loses budget to gradient-routed variance. Overall, unified memory
+  works as a stabilizer on strong models: it drops the floor from −3.6 k to
+  ~−0.2 k while preserving the ceiling.
+- **Weak-model failure mode (Ollama gemma3:4b, 8a×10s)**: with a 4 B model
+  the shared deque amplified herding — `unified_cooccurrence −3418` vs
+  `separate_cooccurrence +494`. Unified memory only works when the underlying
+  LLM can distinguish its own prior actions from peers' actions in a mixed
+  log.
+
+Sweep outputs: [outputs/mem_sweep/](outputs/mem_sweep/),
+[outputs/mem_sweep_openai/](outputs/mem_sweep_openai/).
+
+### Profile validator guardrail (`--profile-validator`)
+
+Standard shilling-attack detectors look at per-user rating patterns. AGAS's
+attack is itself susceptible to such detectors, so we implemented one and
+wired it back into the coordinator as a **guardrail** — flagged agents are
+forced to `INACTIVE` so they cool down before the next step.
+
+Implementation: [src/agas/agents/profile_validator.py](src/agas/agents/profile_validator.py).
+Three metrics, all normalized to `[0, 1]`:
+
+1. **`extremity`** — fraction of the agent's ratings at ≥4.5 or ≤1.5 (shills
+   concentrate at the extremes).
+2. **`target_hit`** — 1 if the agent rated the target item ≥ 4.0 at any
+   point (textbook sniper signature).
+3. **`collusion`** — fraction of the agent's items also rated by ≥2 other
+   agents in the pool (captures bridge-item flocking).
+
+Aggregate score: `0.4 * extremity + 0.3 * target_hit + 0.3 * collusion`.
+`--profile-validator-threshold` (default 0.7) is the cool-down trigger.
+Scores are injected into `observation.signals_by_agent[aid]["validator"]`
+each step, read by `RuleBasedCoordinatorPolicy._validator_flagged`, and
+also stored in the final JSON under `profile_validator_scores`.
+
+#### Rule-based sweep with validator (item 593, LightGCN, 8a×10s)
+
+| `--profiler-bridge-method` | Δ rank (no validator) | Δ rank (validator on) | mean aggregate | flagged |
+|---|---:|---:|---:|---:|
+| `none` | −721 | **+462** | 0.598 | 1/8 |
+| `cooccurrence` | −1250 | **+608** | 0.642 | 2/8 |
+| `gradient` | +328 | −1411 | 0.501 | 0/8 |
+| `auto` (thr=20) | +421 | **+562** | 0.587 | 0/8 |
+
+#### Analysis
+
+- **`cooccurrence` and `none` both flipped from negative to positive** when
+  the validator is on. Reason: the validator flags extreme-rating snipers
+  and forces them `INACTIVE`, so the next step the attack budget is spent
+  on profiler bridge-building instead of target-degree inflation. With fewer
+  direct target ratings, LightGCN's degree normalization no longer punishes
+  the target's existing edges. Net: validator acted as a self-imposed
+  **sniper rate-limiter** and the attack got *more* effective.
+- **`gradient` regressed sharply** (+328 → −1411). Gradient already uses
+  fewer sniper ratings (55 vs 78 for none) and its bridge items are less
+  popular / less colluded, so `mean_aggregate` is lowest (0.501) and no
+  agent gets flagged. Yet the cool-down still fired opportunistically on
+  agents with borderline scores during high-rank-pressure steps, starving
+  the gradient payload. Gradient needs every sniper interaction it has;
+  losing any of them tips the balance into degree dilution.
+- **`auto` held up** (+421 → +562) because with the 20-rating threshold it
+  routed to cooccurrence (32 ≥ 20 but the LightGCN signal on this
+  subsampled dataset still favors the cooccurrence pathway at 8-agent
+  scale).
+- **`gradient` produces the most believable profiles** by this metric —
+  mean aggregate 0.501, zero flags, lowest extremity. This is a real
+  stealth advantage of gradient-selected bridges: they look like
+  naturalistic ratings rather than popular-filler shilling.
+- **`cooccurrence` profiles look the most fake** (mean 0.642, 2 flags)
+  because co-occurrence bridges are popular items shared across agents,
+  which directly drives the collusion metric up.
+- **Per-agent scores persist** in the output JSON
+  (`profile_validator_scores`), so downstream analysis can rank-order
+  agents by suspicion and use this as a label for training a learnable
+  detector.
+
+Sweep outputs: [outputs/validator_sweep/](outputs/validator_sweep/).
+
+#### OpenAI gpt-5-mini sweep with validator (item 593, LightGCN, 6a×8s)
+
+Same validator, OpenAI coordinator + workers, compact config. Δ rank in the
+"no validator" column is reused from the unified-memory `separate` row
+earlier in this section (same 6a×8s OpenAI setup, `--profile-validator`
+off).
+
+| `--profiler-bridge-method` | Δ rank (no validator) | Δ rank (validator on) | mean aggregate | flagged |
+|---|---:|---:|---:|---:|
+| `none` | −3652 | **+629** | 0.443 | 0/6 |
+| `cooccurrence` | +526 | +553 | 0.515 | 0/6 |
+| `gradient` | −3643 | −3817 | 0.482 | 0/6 |
+| `auto` (thr=20) | −3571 | −3188 | 0.347 | 0/6 |
+
+##### Analysis
+
+- **`none` flipped from −3652 → +629** — by far the largest swing. Without
+  bridges the LLM snipers were firing extreme target ratings every step,
+  and even though no agent crossed the 0.7 flag threshold, the coordinator
+  still balanced sniper/profiler rotation because validator scores are
+  injected into its role-assignment prompt. That LLM-visible signal alone
+  acted as a rate-limiter.
+- **`cooccurrence` stayed positive and nudged up** (+526 → +553). The
+  cooccurrence path was already healthy; validator signals did not disrupt
+  it.
+- **`gradient` got worse** (−3643 → −3817). Consistent with the rule-based
+  finding: gradient's tight budget cannot absorb any extra cool-down
+  pressure. Here the LLM coordinator does not even have to flag anyone —
+  reading the validator's rising extremity scores for the sniper cohort is
+  enough to make it redistribute roles away from what was already the
+  best-performing sniper window.
+- **No agent was flagged** (threshold 0.7) in any of the 4 OpenAI runs.
+  With 6 agents × 8 steps the per-agent rating count caps around 20–24, so
+  the composite metric rarely crosses the aggressive 0.7 line. The
+  guardrail is acting entirely through LLM soft-feedback via the
+  role-assignment prompt, not the hard `INACTIVE` override.
+- **Aggregate scores are lower than rule-based** (means 0.34–0.52 vs
+  0.50–0.64) because the LLM varies its rating values more than the rule
+  schedule — fewer ratings land at the extremity-threshold endpoints.
+  gpt-5-mini's profiles look *more* natural than rule-generated profiles
+  by this metric, which matters if the detector is what you're trying to
+  evade rather than strengthen.
+
+Sweep outputs: [outputs/validator_sweep_openai/](outputs/validator_sweep_openai/).
+
 ## 7. Run AGAS Episode
 
 Rule-based coordinator:

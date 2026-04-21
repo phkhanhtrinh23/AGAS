@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Sequence
 
 from agas.agents.coordinator import Coordinator
 from agas.agents.messages import EnvironmentFeedback
+from agas.agents.profile_validator import ProfileValidator
 from agas.agents.worker import WorkerAgent, WorkerState, build_worker_pool
 from agas.simulation.environment import AGASEnvironment
 
@@ -21,6 +22,8 @@ class EpisodeConfig:
     stop_on_goal: bool = True
     trajectory_window: int = 5
     coordinator_agent_memory: bool = False
+    profile_validator_enabled: bool = False
+    profile_validator_threshold: float = 0.7
     n_steps: int | None = None
     n_workers: int | None = None
 
@@ -45,6 +48,7 @@ class EpisodeResult:
     coordinator_logs: List[dict]
     stopped_early: bool = False
     stop_reason: str | None = None
+    profile_validator_scores: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     @property
     def final_target_rank(self) -> int:
@@ -95,6 +99,10 @@ class AGASEpisodeRunner:
         self.environment = environment
         self.config = config or EpisodeConfig()
         self.workers = workers or build_worker_pool(default_agent_ids(self.config.num_workers))
+        self.profile_validator: ProfileValidator | None = (
+            ProfileValidator() if self.config.profile_validator_enabled else None
+        )
+        self.last_validator_scores: Dict[str, Dict[str, float]] = {}
 
     def _goal_reached(self) -> bool:
         """Return whether the environment currently satisfies the configured target rank.
@@ -245,6 +253,7 @@ class AGASEpisodeRunner:
                 coordinator_logs=coordinator_logs,
                 stopped_early=stopped_early,
                 stop_reason=stop_reason,
+                profile_validator_scores={},
             )
 
         for step in range(self.config.num_steps):
@@ -262,6 +271,17 @@ class AGASEpisodeRunner:
                 ),
                 total_steps=self.config.num_steps,
             )
+            if self.profile_validator is not None:
+                scores = self.profile_validator.score_all(
+                    str(self.environment.target_item_id)
+                )
+                self.last_validator_scores = scores
+                for aid, metrics in scores.items():
+                    sig = observation.signals_by_agent.setdefault(aid, {})
+                    sig["validator"] = dict(metrics)
+                    sig["validator_flagged"] = bool(
+                        metrics.get("aggregate", 0.0) >= self.config.profile_validator_threshold
+                    )
             assignments = self.coordinator.assign_roles(observation=observation, worker_states=worker_states)
             policy = getattr(self.coordinator, "policy", None)
             coordinator_trace = getattr(policy, "last_trace", None)
@@ -275,6 +295,8 @@ class AGASEpisodeRunner:
                     self.workers[agent_id].set_trajectory_summary(agent_summary, self.config.num_steps)
                 report = self.workers[agent_id].act(assignments[agent_id], step=step, ctx=ctx)
                 reports.append(report)
+                if self.profile_validator is not None:
+                    self.profile_validator.update(agent_id, report.actions)
 
             feedback: EnvironmentFeedback = self.environment.execute_step(
                 step=step,
@@ -329,6 +351,11 @@ class AGASEpisodeRunner:
                 )
                 break
 
+        final_scores = (
+            self.profile_validator.score_all(str(self.environment.target_item_id))
+            if self.profile_validator is not None
+            else {}
+        )
         return EpisodeResult(
             history=history,
             final_rank=self.environment.current_rank,
@@ -338,6 +365,7 @@ class AGASEpisodeRunner:
             coordinator_logs=coordinator_logs,
             stopped_early=stopped_early,
             stop_reason=stop_reason,
+            profile_validator_scores=final_scores,
         )
 
 
