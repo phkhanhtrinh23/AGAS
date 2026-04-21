@@ -118,6 +118,16 @@ class WorkerAgent:
         self._temperature_end = float(temperature_end) if temperature_end is not None else None
         self._total_steps = total_steps
         self._trajectory_summary: List[Dict[str, Any]] = []
+        self._unified_memory = None  # type: ignore[assignment]
+
+    def set_unified_memory(self, memory) -> None:
+        """Attach a shared ``UnifiedMemory`` instance replacing per-agent memory.
+
+        When attached, the worker reads memory snapshots from this shared buffer
+        and appends each generated action batch to it.
+        """
+
+        self._unified_memory = memory
 
     def set_trajectory_summary(self, summary: List[Dict[str, Any]], total_steps: int | None = None) -> None:
         """Attach a rolling per-agent summary for LLM context.
@@ -1027,7 +1037,12 @@ class WorkerAgent:
             "target_cluster_items": list(ctx.target_cluster_items[:20]),
             "competitor_items": list(ctx.competitor_items[:10]),
             "noise_items": list(ctx.noise_items[:20]),
-            "trajectory_summary": list(self._trajectory_summary),
+            "trajectory_summary": (
+                self._unified_memory.snapshot()
+                if self._unified_memory is not None
+                else list(self._trajectory_summary)
+            ),
+            "memory_mode": "unified" if self._unified_memory is not None else "per_agent",
         }
 
         default_system, default_user = self._default_prompt_text(role, assignment)
@@ -1087,6 +1102,19 @@ class WorkerAgent:
             "system_path": bundle.system_path,
             "user_path": bundle.user_path,
         }
+        if self._unified_memory is not None:
+            self._unified_memory.append(
+                {
+                    "step": int(step),
+                    "actor": self.state.agent_id,
+                    "kind": "worker_action",
+                    "role": role.value,
+                    "actions": [
+                        {"item_id": a.item_id, "rating": float(a.rating)} for a in actions
+                    ],
+                    "fallback": bool(fallback_used),
+                }
+            )
         return actions
 
 

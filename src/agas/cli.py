@@ -20,6 +20,7 @@ from agas.agents.coordinator import (
     RuleBasedCoordinatorPolicy,
 )
 from agas.agents.messages import AgentRole
+from agas.agents.unified_memory import UnifiedMemory
 from agas.llm.prompt_store import PromptStore
 from agas.agents.worker import WorkerPolicyConfig, build_worker_pool
 try:
@@ -305,6 +306,21 @@ def _build_coordinator_and_workers(
         temperature_end=args.worker_llm_temperature_end,
         total_steps=total_steps,
     )
+    if bool(getattr(args, "unified_memory", False)):
+        if not isinstance(policy, LLMCoordinatorPolicy) or worker_llm_client is None:
+            raise RuntimeError(
+                "--unified-memory requires LLM coordinator and LLM workers "
+                "(set --coordinator-policy openai|ollama and --worker-policy openai|ollama)."
+            )
+        shared = UnifiedMemory(maxlen=int(getattr(args, "unified_memory_size", 15)))
+        policy.set_unified_memory(shared)
+        for worker in workers.values():
+            if hasattr(worker, "set_unified_memory"):
+                worker.set_unified_memory(shared)
+        print(
+            f"Unified memory enabled: single shared deque of {shared.maxlen} events "
+            f"across coordinator and {len(workers)} workers."
+        )
     return coordinator, workers
 
 
@@ -1675,6 +1691,22 @@ def build_parser() -> argparse.ArgumentParser:
             "Default 100. Rationale: warm targets (many ratings) have stable LightGCN embeddings "
             "so gradient gradients are reliable; cold targets risk spurious alignment."
         ),
+    )
+    p_transfer.add_argument(
+        "--unified-memory",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Single-LLM unified-memory mode. One shared bounded deque (see --unified-memory-size) "
+            "replaces per-agent trajectory summaries. Both coordinator and every worker read/write "
+            "the same memory. Requires LLM coordinator + LLM workers."
+        ),
+    )
+    p_transfer.add_argument(
+        "--unified-memory-size",
+        type=int,
+        default=15,
+        help="Maximum number of recent events kept in the unified shared memory (default 15).",
     )
     p_transfer.add_argument(
         "--episode-model",

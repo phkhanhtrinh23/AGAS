@@ -260,6 +260,12 @@ class LLMCoordinatorPolicy:
 
         self.prompt_store = self.prompt_store or PromptStore()
         self.last_trace: Dict[str, Any] | None = None
+        self._unified_memory = None  # type: ignore[assignment]
+
+    def set_unified_memory(self, memory) -> None:
+        """Attach shared ``UnifiedMemory`` so the coordinator reads/writes it."""
+
+        self._unified_memory = memory
 
     def _resolve_temperature(self, step: int) -> float:
         """Return scheduled temperature for this step.
@@ -344,7 +350,21 @@ class LLMCoordinatorPolicy:
                 "system_path": bundle.system_path,
                 "user_path": bundle.user_path,
             }
-            return fallback.assign(observation, worker_states)
+            assignments = fallback.assign(observation, worker_states)
+            if self._unified_memory is not None:
+                self._unified_memory.append(
+                    {
+                        "step": int(observation.step),
+                        "actor": "coordinator",
+                        "kind": "role_assignment",
+                        "assignments": {
+                            aid: assignments[aid].role.value for aid in self.agent_order
+                        },
+                        "target_rank": int(observation.target_rank),
+                        "fallback": "llm_error",
+                    }
+                )
+            return assignments
         self.last_trace = {
             "prompt_key": bundle.key,
             "system_prompt": bundle.system_prompt,
@@ -356,12 +376,23 @@ class LLMCoordinatorPolicy:
         }
 
         assignments = self._parse_assignments(response, observation.step)
-        if assignments:
-            return assignments
-
-        self.last_trace["fallback_used"] = True
-        self.last_trace["fallback_reason"] = "parse_failed"
-        return fallback.assign(observation, worker_states)
+        if not assignments:
+            self.last_trace["fallback_used"] = True
+            self.last_trace["fallback_reason"] = "parse_failed"
+            assignments = fallback.assign(observation, worker_states)
+        if self._unified_memory is not None:
+            self._unified_memory.append(
+                {
+                    "step": int(observation.step),
+                    "actor": "coordinator",
+                    "kind": "role_assignment",
+                    "assignments": {
+                        aid: assignments[aid].role.value for aid in self.agent_order
+                    },
+                    "target_rank": int(observation.target_rank),
+                }
+            )
+        return assignments
 
     def _build_prompt(self, observation: CoordinatorObservation, worker_states: Dict[str, WorkerState]) -> str:
         """Serialize state into a compact JSON prompt for the LLM backend.
@@ -389,6 +420,9 @@ class LLMCoordinatorPolicy:
             "victim_strategy": _VICTIM_STRATEGY_HINTS.get(self.victim_model_class, ""),
             "objective": "Promote target item while minimizing anomaly alerts and bans.",
         }
+        if self._unified_memory is not None:
+            state_blob["unified_memory"] = self._unified_memory.snapshot()
+            state_blob["memory_mode"] = "unified"
         return json.dumps(state_blob, indent=2)
 
     def _parse_assignments(self, text: str, step: int) -> Dict[str, RoleAssignment]:
