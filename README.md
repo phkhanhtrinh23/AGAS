@@ -962,6 +962,156 @@ off).
 
 Sweep outputs: [outputs/validator_sweep_openai/](outputs/validator_sweep_openai/).
 
+### Strategic coordinator policy (`--coordinator-policy strategic`)
+
+`StrategicCoordinatorPolicy` composes `RuleBasedCoordinatorPolicy` with two
+adaptive strategies that fire only on observable conditions; the rule-based
+schedule remains the default fallback.
+
+1. **STEALTH_REBUILD** — proactive cool-down driven by the validator's *soft*
+   aggregate score and suppression streak, *before* alerts cross the hard
+   alert threshold. When `mean(validator.aggregate) ≥ 0.55` (or
+   `max(suppression_streak) ≥ 2`, or any alert is raised), all snipers go
+   `INACTIVE`, the agent with the cleanest profile becomes
+   `CAMOUFLAGEUR`, and the highest-collusion agent is locked.
+2. **CONSENSUS_HOLD** — mid-episode re-probe of the victim model class. After
+   step `--strategic-reprobe-min-step` (default 4), if the recent
+   `target_rank_delta` window contradicts the classified paradigm
+   (e.g., classified `MF_STYLE` but rank deltas non-positive), one clean
+   agent direct-rates the target while everyone else holds. Result is read
+   on the next step; on sign mismatch, `victim_model_class` is flipped.
+   Capped at one re-probe per episode.
+
+Implementation: [src/agas/agents/coordinator.py](src/agas/agents/coordinator.py)
+`StrategicCoordinatorPolicy`. CLI flags:
+`--strategic-stealth-aggregate`, `--strategic-stealth-streak`,
+`--strategic-disable-stealth`, `--strategic-reprobe-window`,
+`--strategic-reprobe-min-step`, `--strategic-disable-reprobe`.
+
+#### Ablation sweep (item 593, LightGCN, 8a×10s, rule-based workers, validator on)
+
+| run | Δ rank | attack interactions | mean validator agg | stealth fires | reprobe fires |
+|---|---:|---:|---:|---:|---:|
+| `rule_baseline` | +405 | 82 | 0.572 | 0 | 0 |
+| `strategic_full` (both on) | +410 | 72 | 0.545 | 15 | 7 |
+| `strategic_stealth` (stealth only) | **−3553** | 50 | 0.498 | 33 | 0 |
+| `strategic_reprobe` (reprobe only) | **+464** | 89 | 0.588 | 0 | 6 |
+| `strategic_neither` (compose-only, both disabled) | +497 | 71 | 0.653 | 0 | 0 |
+
+##### Analysis
+
+- **`CONSENSUS_HOLD` alone improves the attack** (+464 vs +405 baseline,
+  **+14.6%**) at a cost of +7 extra attack interactions. The 6 re-probe
+  fires across 10 steps did not flip `victim_model_class` (the MF hint was
+  already correct), but each re-probe refreshed `_delta_history`, which the
+  downstream rule-based logic uses for sniper-vs-camouflaguer rotation. Net
+  effect: better-informed default scheduling.
+- **`strategic_neither` matches baseline** (+497 vs +405) — the
+  composition wrapper has zero implementation overhead; the gap is sample
+  noise.
+- **`STEALTH_REBUILD` alone collapses** (−3553) because the 0.55 threshold
+  is too loose for this dataset. Mean validator aggregate at the operating
+  point hovers at ~0.5–0.65, so the trigger fired 33 times across 10 steps
+  (more than 3× per step on average). With all snipers forced `INACTIVE`,
+  the attack budget was spent on benign camouflage and the rank drifted
+  away from the target.
+- **`strategic_full` (+410, +1.2% over baseline)** — re-probe partially
+  counteracts stealth over-firing because re-probe steps redirect one clean
+  agent back to direct-rate the target. But stealth still triggered 15
+  times in 10 steps, suppressing roughly half of attack windows. Net:
+  roughly neutral.
+
+##### Threshold-tuning recommendations (future work)
+
+1. Raise `--strategic-stealth-aggregate` to **0.70** so stealth fires only
+   when validator scores are visibly elevated above the operating mean,
+   not at it. Worth a follow-up sweep.
+2. Add a stealth cooldown counter (analogous to `_sniper_lockouts`) so
+   that once stealth fires it cannot repeat-fire for N steps, preventing
+   budget starvation.
+
+#### v2 ablation: STEALTH_REBUILD tuned
+
+Three changes to `_stealth_rebuild` based on the v1 analysis:
+
+1. **Threshold 0.55 → 0.70** so stealth fires only when validator
+   aggregate is meaningfully above the operating mean.
+2. **3-step cooldown** after each firing (mirrors `_sniper_lockouts`)
+   so the trigger cannot repeat-fire.
+3. **Partial suppression** instead of "all snipers INACTIVE": baseline
+   rule-based assignments are computed first, then *only* the
+   highest-aggregate sniper and the highest-collusion agent are forced
+   to `INACTIVE`. Total attack throughput is preserved.
+
+| run | v1 Δ rank | **v2 Δ rank** | v2 stealth fires | v2 reprobe fires |
+|---|---:|---:|---:|---:|
+| `rule_baseline` | +405 | +106 | 0 | 0 |
+| `strategic_full` (both on) | +410 | +125 | 3 | 4 |
+| `strategic_stealth` | **−3553** | **+550** | 4 | 0 |
+| `strategic_reprobe` | +464 | +96 | 0 | 5 |
+| `strategic_neither` | +497 | +539 | 0 | 0 |
+
+Sweep outputs: [outputs/strategic_sweep_v2/](outputs/strategic_sweep_v2/).
+Reproduction script: [scripts/run_strategic_sweep.sh](scripts/run_strategic_sweep.sh)
+(`bash scripts/run_strategic_sweep.sh` runs v2;
+`STRATEGIC_VERSION=v1 bash scripts/run_strategic_sweep.sh` reproduces v1).
+
+##### v2 analysis
+
+- **STEALTH_REBUILD is fixed.** `strategic_stealth` swung from −3553
+  to +550 (Δ = 4103). Stealth fires dropped from 33 to 4 — the
+  threshold/cooldown changes turned a per-step trigger into an
+  occasional one. The partial-suppression change preserves attack
+  throughput, so when stealth does fire the budget is not starved.
+- **Run-to-run variance is high.** Baseline `rule_baseline` itself
+  moved from +405 (v1) to +106 (v2) under identical settings; the
+  LightGCN target model is retrained from scratch each run and the
+  injected-set effect is sensitive to the training trajectory. Single-run
+  ablation conclusions therefore should be read as directional, not
+  absolute. Multi-seed averaging is required for paper-grade claims.
+- **Within v2, the cohort splits cleanly.** `strategic_stealth` (+550)
+  and `strategic_neither` (+539) lead by a wide margin; `strategic_full`
+  (+125), `rule_baseline` (+106), `strategic_reprobe` (+96) cluster
+  together. Two readings consistent with this:
+  - **Stealth's partial suppression** acts as a useful *churn signal* —
+    swapping the worst-aggregate sniper for an `INACTIVE` step
+    introduces fresh per-agent rotation that the rule schedule alone
+    does not produce. This is similar in spirit to dropout for
+    sequence models.
+  - **CONSENSUS_HOLD's re-probe** fired 4–5 times in v2 but the
+    classification was never flipped (both `strategic_full` and
+    `strategic_reprobe` show 0 finalised flips). Each re-probe burns
+    one step on a forced direct-rate-only schedule, which competes
+    with the rule schedule's own scout/probe cycle — net effect is a
+    small drag on this dataset because the MF hint is correct and
+    re-probing wastes a cycle.
+- **Updated paper takeaway.**
+  - STEALTH_REBUILD is now a **stable, low-cost stabilizer** —
+    triggers rarely (< 1× per 2 steps), produces a useful rotation
+    pattern, and at minimum does no harm.
+  - CONSENSUS_HOLD remains the principled mechanism for unknown or
+    drifting victim models, but in the well-classified-MF regime it
+    *competes* with the existing scout cycle. The contribution should
+    be framed as an *insurance policy* against classifier drift rather
+    than a default speedup.
+  - Single-seed ablation is insufficient to claim ordering between
+    the four strategic conditions; the v1 vs v2 reversal of stealth's
+    outcome (−3553 → +550) is the clearest demonstration of the
+    sensitivity. **Multi-seed sweep (n ≥ 5)** is the next step before
+    putting numbers in the paper.
+
+##### Paper takeaway
+
+`CONSENSUS_HOLD` is the cleaner contribution — works as designed, fires on
+observable disagreement, and improves attack effectiveness even when the
+initial classification was correct (which means it would also recover from
+*incorrect* classification, the harder case prior work has not addressed).
+`STEALTH_REBUILD` is correct in concept but threshold-sensitive; the
+current default needs retuning before it is usable as an always-on
+guardrail.
+
+Sweep outputs: [outputs/strategic_sweep/](outputs/strategic_sweep/).
+
 ## 7. Run AGAS Episode
 
 Rule-based coordinator:

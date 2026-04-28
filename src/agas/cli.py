@@ -18,6 +18,7 @@ from agas.agents.coordinator import (
     CoordinatorRuntimeConfig,
     LLMCoordinatorPolicy,
     RuleBasedCoordinatorPolicy,
+    StrategicCoordinatorPolicy,
 )
 from agas.agents.messages import AgentRole
 from agas.agents.unified_memory import UnifiedMemory
@@ -220,6 +221,19 @@ def _build_coordinator_and_workers(
             max_snipers=max_snipers,
             sniper_start_step=int(getattr(args, "sniper_start_step", 0)),
         )
+    elif args.coordinator_policy == "strategic":
+        policy = StrategicCoordinatorPolicy(
+            agent_order=agent_ids,
+            max_snipers=max_snipers,
+            sniper_start_step=int(getattr(args, "sniper_start_step", 0)),
+            stealth_aggregate_mean=float(getattr(args, "strategic_stealth_aggregate", 0.70)),
+            stealth_streak=int(getattr(args, "strategic_stealth_streak", 2)),
+            stealth_cooldown_steps=int(getattr(args, "strategic_stealth_cooldown", 3)),
+            enable_stealth_rebuild=not bool(getattr(args, "strategic_disable_stealth", False)),
+            reprobe_window=int(getattr(args, "strategic_reprobe_window", 3)),
+            reprobe_min_step=int(getattr(args, "strategic_reprobe_min_step", 4)),
+            enable_consensus_hold=not bool(getattr(args, "strategic_disable_reprobe", False)),
+        )
     else:
         if args.coordinator_policy == "openai":
             api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
@@ -273,6 +287,8 @@ def _build_coordinator_and_workers(
         probe_use_graph=bool(getattr(args, "probe_use_graph", False)),
         probe_consensus=bool(getattr(args, "probe_consensus", False)),
     )
+    if isinstance(policy, StrategicCoordinatorPolicy):
+        policy.attach_coordinator(coordinator)
     worker_policy_name = args.worker_policy
     worker_llm_client = None
     if worker_policy_name != "rule":
@@ -1412,7 +1428,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Aggregate validator score above which agents are forced to cool-down.",
     )
 
-    p_run.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama"], default="openai")
+    p_run.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama", "strategic"], default="openai")
+    p_run.add_argument("--strategic-stealth-aggregate", type=float, default=0.70)
+    p_run.add_argument("--strategic-stealth-streak", type=int, default=2)
+    p_run.add_argument("--strategic-stealth-cooldown", type=int, default=3)
+    p_run.add_argument("--strategic-disable-stealth", action="store_true")
+    p_run.add_argument("--strategic-reprobe-window", type=int, default=3)
+    p_run.add_argument("--strategic-reprobe-min-step", type=int, default=4)
+    p_run.add_argument("--strategic-disable-reprobe", action="store_true")
     p_run.add_argument("--llm-model", default="gpt-5-mini")
     p_run.add_argument("--llm-temperature", type=float, default=0.3)
     p_run.add_argument("--llm-temperature-end", type=float, default=None)
@@ -1518,7 +1541,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Aggregate validator score above which agents are forced to cool-down.",
     )
 
-    p_transfer.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama"], default="openai")
+    p_transfer.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama", "strategic"], default="openai")
+    p_transfer.add_argument("--strategic-stealth-aggregate", type=float, default=0.55)
+    p_transfer.add_argument("--strategic-stealth-streak", type=int, default=2)
+    p_transfer.add_argument("--strategic-disable-stealth", action="store_true")
+    p_transfer.add_argument("--strategic-reprobe-window", type=int, default=3)
+    p_transfer.add_argument("--strategic-reprobe-min-step", type=int, default=4)
+    p_transfer.add_argument("--strategic-disable-reprobe", action="store_true")
     p_transfer.add_argument("--llm-model", default="gpt-5-mini")
     p_transfer.add_argument("--llm-temperature", type=float, default=0.3)
     p_transfer.add_argument("--llm-temperature-end", type=float, default=None)

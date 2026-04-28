@@ -259,6 +259,323 @@ class RuleBasedCoordinatorPolicy:
 
 
 @dataclass
+class StrategicCoordinatorPolicy:
+    """Composes RuleBasedCoordinatorPolicy with two adaptive strategies:
+
+    1. STEALTH_REBUILD — proactive cool-down driven by validator-aggregate
+       and suppression streaks before alerts cross the hard threshold.
+    2. CONSENSUS_HOLD — mid-episode re-probe when classified victim model
+       disagrees with observed rank deltas under the chosen strategy.
+
+    Falls back to ``RuleBasedCoordinatorPolicy.assign`` when neither
+    strategy fires.
+    """
+
+    agent_order: Sequence[str] | None = None
+    max_snipers: int = 1
+    sniper_start_step: int = 0
+    # Strategy 1 thresholds (post-tuning defaults: stricter trigger,
+    # rate-limited firing, partial suppression).
+    stealth_aggregate_mean: float = 0.70
+    stealth_streak: int = 2
+    stealth_collusion_lock_steps: int = 2
+    stealth_cooldown_steps: int = 3
+    enable_stealth_rebuild: bool = True
+    # Strategy 2 thresholds.
+    reprobe_window: int = 3
+    reprobe_min_step: int = 4
+    enable_consensus_hold: bool = True
+
+    def __post_init__(self) -> None:
+        self._fallback = RuleBasedCoordinatorPolicy(
+            agent_order=self.agent_order,
+            max_snipers=self.max_snipers,
+            sniper_start_step=self.sniper_start_step,
+        )
+        self._reprobe_used: bool = False
+        self._reprobe_step: int | None = None
+        self._reprobe_rank_before: int | None = None
+        self._rank_history: list[int] = []
+        self._delta_history: list[int] = []
+        self._stealth_cooldown_remaining: int = 0
+        # Filled by Coordinator after assignment so paper-grade traces survive.
+        self.last_strategy: str = "default"
+        self.last_trace: Dict[str, Any] = {}
+        self.victim_model_class: str = VictimModelClass.UNKNOWN.value
+        # Provided by Coordinator each step so CONSENSUS_HOLD can flip it.
+        self._coordinator_ref: Any = None
+
+    def attach_coordinator(self, coordinator: Any) -> None:
+        """Coordinator passes self so we can flip ``victim_model_class``."""
+
+        self._coordinator_ref = coordinator
+
+    def _validator_stats(
+        self, observation: CoordinatorObservation
+    ) -> tuple[float, float, str | None]:
+        """Return (mean_aggregate, max_streak, top_collusion_agent)."""
+
+        agg_vals: list[float] = []
+        streaks: list[int] = []
+        top_collusion = (-1.0, None)
+        for aid, signal in observation.signals_by_agent.items():
+            if not isinstance(signal, dict):
+                continue
+            v = signal.get("validator", {})
+            if isinstance(v, dict):
+                agg_vals.append(float(v.get("aggregate", 0.0)))
+                col = float(v.get("collusion", 0.0))
+                if col > top_collusion[0]:
+                    top_collusion = (col, aid)
+            streaks.append(int(signal.get("suppression_streak", 0)))
+        mean_agg = sum(agg_vals) / max(1, len(agg_vals))
+        max_streak = max(streaks) if streaks else 0
+        return mean_agg, float(max_streak), top_collusion[1]
+
+    def _needs_stealth_rebuild(self, observation: CoordinatorObservation) -> bool:
+        if not self.enable_stealth_rebuild:
+            return False
+        if self._stealth_cooldown_remaining > 0:
+            return False
+        mean_agg, max_streak, _ = self._validator_stats(observation)
+        if mean_agg >= self.stealth_aggregate_mean:
+            return True
+        if max_streak >= self.stealth_streak:
+            return True
+        if observation.alerts_by_agent:
+            return True
+        return False
+
+    def _stealth_rebuild(
+        self,
+        observation: CoordinatorObservation,
+        worker_states: Dict[str, WorkerState],
+        baseline_assignments: Dict[str, RoleAssignment],
+    ) -> Dict[str, RoleAssignment]:
+        """Partial suppression: lock the *highest-aggregate* sniper only.
+
+        Other roles assigned by the underlying rule-based policy are
+        preserved, so the attack budget is not starved. The cleanest
+        profile is also nudged to ``CAMOUFLAGEUR`` if it is currently
+        ``INACTIVE`` so total throughput stays roughly constant.
+        """
+
+        step = observation.step
+        order = self.agent_order or tuple(sorted(worker_states.keys()))
+        _, _, top_collusion_agent = self._validator_stats(observation)
+
+        per_agent_agg: Dict[str, float] = {}
+        for aid in order:
+            v = observation.signals_by_agent.get(aid, {}).get("validator", {})
+            if isinstance(v, dict):
+                per_agent_agg[aid] = float(v.get("aggregate", 0.0))
+            else:
+                per_agent_agg[aid] = 0.0
+
+        # Start from the rule-based plan and mutate selectively (partial
+        # suppression rather than blanket INACTIVE).
+        assignments: Dict[str, RoleAssignment] = {
+            aid: RoleAssignment(
+                step=a.step,
+                agent_id=a.agent_id,
+                role=a.role,
+                rationale=a.rationale,
+                metadata=dict(a.metadata),
+            )
+            for aid, a in baseline_assignments.items()
+        }
+
+        sniper_ids = [aid for aid, a in assignments.items() if a.role == AgentRole.SNIPER]
+        if sniper_ids:
+            worst_sniper = max(sniper_ids, key=lambda a: per_agent_agg.get(a, 0.0))
+            assignments[worst_sniper] = RoleAssignment(
+                step=step,
+                agent_id=worst_sniper,
+                role=AgentRole.INACTIVE,
+                rationale=(
+                    "STEALTH_REBUILD: highest-aggregate sniper cooled down "
+                    f"(agg={per_agent_agg.get(worst_sniper, 0.0):.2f})."
+                ),
+            )
+
+        if top_collusion_agent is not None:
+            assignments[top_collusion_agent] = RoleAssignment(
+                step=step,
+                agent_id=top_collusion_agent,
+                role=AgentRole.INACTIVE,
+                rationale="STEALTH_REBUILD: highest-collusion agent locked.",
+            )
+
+        cleanest = min(per_agent_agg, key=lambda a: per_agent_agg[a]) if per_agent_agg else None
+        if (
+            cleanest is not None
+            and cleanest != top_collusion_agent
+            and assignments[cleanest].role == AgentRole.INACTIVE
+        ):
+            assignments[cleanest] = RoleAssignment(
+                step=step,
+                agent_id=cleanest,
+                role=AgentRole.CAMOUFLAGEUR,
+                rationale=(
+                    "STEALTH_REBUILD: cleanest profile maintains benign activity to avoid full silence."
+                ),
+            )
+        return assignments
+
+    def _record_history(self, observation: CoordinatorObservation) -> None:
+        self._rank_history.append(int(observation.target_rank))
+        self._delta_history.append(int(observation.target_rank_delta))
+        if len(self._rank_history) > 32:
+            self._rank_history = self._rank_history[-32:]
+            self._delta_history = self._delta_history[-32:]
+
+    def _needs_re_probe(self, observation: CoordinatorObservation) -> bool:
+        if not self.enable_consensus_hold or self._reprobe_used:
+            return False
+        if observation.step < self.reprobe_min_step:
+            return False
+        if len(self._delta_history) < self.reprobe_window:
+            return False
+        recent = self._delta_history[-self.reprobe_window :]
+        mean_delta = sum(recent) / len(recent)
+        vc = self.victim_model_class
+        # MF was classified but direct snipers are not improving rank: re-probe.
+        if vc == VictimModelClass.MF_STYLE.value and mean_delta <= 0:
+            return True
+        # LightGCN was classified but bridge strategy is producing strong positive
+        # deltas (>0 sustained) — possibly the model behaves more MF-like for this
+        # subsample; re-probe to verify.
+        if vc == VictimModelClass.LIGHTGCN_STYLE.value and mean_delta > 5:
+            return True
+        return False
+
+    def _consensus_re_probe(
+        self,
+        observation: CoordinatorObservation,
+        worker_states: Dict[str, WorkerState],
+    ) -> Dict[str, RoleAssignment]:
+        """One agent direct-rates target; everyone else inactive."""
+
+        step = observation.step
+        order = self.agent_order or tuple(sorted(worker_states.keys()))
+        # Pick the agent with lowest validator aggregate (cleanest profile).
+        cleanest = min(
+            order,
+            key=lambda a: float(
+                observation.signals_by_agent.get(a, {})
+                .get("validator", {})
+                .get("aggregate", 0.0)
+                if isinstance(observation.signals_by_agent.get(a, {}), dict)
+                else 0.0
+            ),
+        )
+        assignments: Dict[str, RoleAssignment] = {}
+        for aid in order:
+            assignments[aid] = RoleAssignment(
+                step=step,
+                agent_id=aid,
+                role=AgentRole.INACTIVE,
+                rationale="CONSENSUS_HOLD: holding agents inactive during mid-episode re-probe.",
+            )
+        assignments[cleanest] = RoleAssignment(
+            step=step,
+            agent_id=cleanest,
+            role=AgentRole.SNIPER,
+            rationale=(
+                "CONSENSUS_HOLD: cleanest profile fires direct-target sniper to "
+                "test classification under current graph state."
+            ),
+            metadata={"reprobe": True, "reprobe_type": "direct"},
+        )
+        self._reprobe_used = True
+        self._reprobe_step = step
+        self._reprobe_rank_before = int(observation.target_rank)
+        return assignments
+
+    def _maybe_finalise_reprobe(self, observation: CoordinatorObservation) -> None:
+        """Read result of an earlier re-probe and update victim_model_class."""
+
+        if self._reprobe_step is None or self._reprobe_rank_before is None:
+            return
+        if observation.step <= self._reprobe_step:
+            return
+        delta = self._reprobe_rank_before - int(observation.target_rank)
+        # delta > 0 means rank improved (lower number == better).
+        previous = self.victim_model_class
+        if previous == VictimModelClass.MF_STYLE.value and delta <= 0:
+            new_class = VictimModelClass.LIGHTGCN_STYLE.value
+        elif previous == VictimModelClass.LIGHTGCN_STYLE.value and delta > 0:
+            new_class = VictimModelClass.MF_STYLE.value
+        else:
+            new_class = previous
+        if new_class != previous:
+            self.victim_model_class = new_class
+            if self._coordinator_ref is not None:
+                try:
+                    self._coordinator_ref.victim_model_class = VictimModelClass(new_class)
+                except (ValueError, AttributeError):
+                    pass
+            self.last_trace.setdefault("reprobe_history", []).append(
+                {
+                    "step": self._reprobe_step,
+                    "delta": delta,
+                    "old_class": previous,
+                    "new_class": new_class,
+                }
+            )
+        # Reset markers so we don't re-finalise.
+        self._reprobe_step = None
+        self._reprobe_rank_before = None
+
+    def assign(
+        self,
+        observation: CoordinatorObservation,
+        worker_states: Dict[str, WorkerState],
+    ) -> Dict[str, RoleAssignment]:
+        if self.agent_order is None:
+            self.agent_order = tuple(sorted(worker_states.keys()))
+            self._fallback.agent_order = self.agent_order
+
+        self._record_history(observation)
+        self._maybe_finalise_reprobe(observation)
+        if self._stealth_cooldown_remaining > 0:
+            self._stealth_cooldown_remaining -= 1
+
+        # Strategy 1 — defensive priority. Compute the rule-based baseline
+        # first so we can mutate it (partial suppression) instead of
+        # replacing the entire schedule.
+        if self._needs_stealth_rebuild(observation):
+            baseline = self._fallback.assign(observation, worker_states)
+            self.last_strategy = "stealth_rebuild"
+            mean_agg, max_streak, _ = self._validator_stats(observation)
+            self.last_trace = {
+                "strategy": "stealth_rebuild",
+                "mean_aggregate": mean_agg,
+                "max_streak": max_streak,
+                "alerts": list(observation.alerts_by_agent.keys()),
+                "cooldown_set_to": int(self.stealth_cooldown_steps),
+            }
+            self._stealth_cooldown_remaining = max(0, int(self.stealth_cooldown_steps))
+            return self._stealth_rebuild(observation, worker_states, baseline)
+
+        # Strategy 2 — corrective re-probe.
+        if self._needs_re_probe(observation):
+            self.last_strategy = "consensus_hold"
+            self.last_trace = {
+                "strategy": "consensus_hold",
+                "step": int(observation.step),
+                "victim_model_class_before": self.victim_model_class,
+                "delta_window": list(self._delta_history[-self.reprobe_window :]),
+            }
+            return self._consensus_re_probe(observation, worker_states)
+
+        # Default — rule-based fallback.
+        self.last_strategy = "default"
+        self.last_trace = {"strategy": "default"}
+        return self._fallback.assign(observation, worker_states)
+
+
+@dataclass
 class LLMCoordinatorPolicy:
     """LLM-driven coordinator using OpenAI or Ollama backend."""
 
