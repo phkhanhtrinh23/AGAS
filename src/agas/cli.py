@@ -220,7 +220,14 @@ def _build_coordinator_and_workers(
             agent_order=agent_ids,
             max_snipers=max_snipers,
             sniper_start_step=int(getattr(args, "sniper_start_step", 0)),
+            enable_trust_bank_opening=not bool(getattr(args, "strategic_disable_trust_bank_opening", False)),
+            enable_synchronized_payload=not bool(getattr(args, "strategic_disable_synchronized_payload", False)),
+            enable_alert_cooldown=not bool(getattr(args, "strategic_disable_alert_cooldown", False)),
+            enable_trust_rank_exploit=not bool(getattr(args, "strategic_disable_trust_rank_exploit", False)),
+            enable_validator_guardrail=not bool(getattr(args, "strategic_disable_validator_guardrail", False)),
         )
+        # PROBE_CLASSIFY toggle is honoured even for rule-based.
+        policy.enable_probe_classify = not bool(getattr(args, "strategic_disable_probe_classify", False))
     elif args.coordinator_policy == "strategic":
         policy = StrategicCoordinatorPolicy(
             agent_order=agent_ids,
@@ -233,6 +240,20 @@ def _build_coordinator_and_workers(
             reprobe_window=int(getattr(args, "strategic_reprobe_window", 3)),
             reprobe_min_step=int(getattr(args, "strategic_reprobe_min_step", 4)),
             enable_consensus_hold=not bool(getattr(args, "strategic_disable_reprobe", False)),
+            budget_pressure_drop_ratio=float(getattr(args, "strategic_budget_drop", 0.7)),
+            budget_pressure_hold_steps=int(getattr(args, "strategic_budget_hold", 2)),
+            enable_budget_pressure=not bool(getattr(args, "strategic_disable_budget", False)),
+            diversity_lookback=int(getattr(args, "strategic_diversity_lookback", 3)),
+            diversity_max_repeat=int(getattr(args, "strategic_diversity_max_repeat", 2)),
+            enable_diversity=not bool(getattr(args, "strategic_disable_diversity", False)),
+            enable_probe_classify=not bool(getattr(args, "strategic_disable_probe_classify", False)),
+            enable_trust_bank_opening=not bool(getattr(args, "strategic_disable_trust_bank_opening", False)),
+            enable_synchronized_payload=not bool(getattr(args, "strategic_disable_synchronized_payload", False)),
+            enable_alert_cooldown=not bool(getattr(args, "strategic_disable_alert_cooldown", False)),
+            enable_trust_rank_exploit=not bool(getattr(args, "strategic_disable_trust_rank_exploit", False)),
+            enable_validator_guardrail=not bool(getattr(args, "strategic_disable_validator_guardrail", False)),
+            enable_suspicion_lockout=not bool(getattr(args, "strategic_disable_suspicion_lockout", False)),
+            enable_cooccurrence_bridging=not bool(getattr(args, "strategic_disable_cooccurrence_bridging", False)),
         )
     else:
         if args.coordinator_policy == "openai":
@@ -269,6 +290,7 @@ def _build_coordinator_and_workers(
         sniper_lock_memory_events=args.sniper_lock_memory_events,
         sniper_lock_role=lock_role,
         transfer_sniper_direct_target=False,
+        enable_suspicion_lockout=not bool(getattr(args, "strategic_disable_suspicion_lockout", False)),
     )
     # If transfer extraction keeps only sniper (and optionally diagnostic) rows,
     # force direct-target snipers so the injected set contains target positives.
@@ -287,8 +309,18 @@ def _build_coordinator_and_workers(
         probe_use_graph=bool(getattr(args, "probe_use_graph", False)),
         probe_consensus=bool(getattr(args, "probe_consensus", False)),
     )
-    if isinstance(policy, StrategicCoordinatorPolicy):
+    # Attach is also performed inside Coordinator.__init__, but kept here for
+    # backwards compatibility with callers that build coordinators differently.
+    if hasattr(policy, "attach_coordinator") and getattr(policy, "_coordinator_ref", None) is None:
         policy.attach_coordinator(coordinator)
+    # COOCCURRENCE_BRIDGING overlay — feed --profiler-bridge-method into the
+    # coordinator so it can stamp ``bridge_method`` into assignment metadata
+    # for any LightGCN-class step. Disabled when --strategic-disable-cooccurrence-bridging
+    # is set, regardless of the bridge-method seed.
+    coordinator.configure_cooccurrence_bridging(
+        method=getattr(args, "profiler_bridge_method", "none"),
+        enabled=not bool(getattr(args, "strategic_disable_cooccurrence_bridging", False)),
+    )
     worker_policy_name = args.worker_policy
     worker_llm_client = None
     if worker_policy_name != "rule":
@@ -1436,6 +1468,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--strategic-reprobe-window", type=int, default=3)
     p_run.add_argument("--strategic-reprobe-min-step", type=int, default=4)
     p_run.add_argument("--strategic-disable-reprobe", action="store_true")
+    p_run.add_argument("--strategic-budget-drop", type=float, default=0.7)
+    p_run.add_argument("--strategic-budget-hold", type=int, default=2)
+    p_run.add_argument("--strategic-disable-budget", action="store_true")
+    p_run.add_argument("--strategic-diversity-lookback", type=int, default=3)
+    p_run.add_argument("--strategic-diversity-max-repeat", type=int, default=2)
+    p_run.add_argument("--strategic-disable-diversity", action="store_true")
+    # Newly-named phase + overlay ablation toggles (default off = strategy enabled).
+    p_run.add_argument("--strategic-disable-probe-classify", action="store_true")
+    p_run.add_argument("--strategic-disable-trust-bank-opening", action="store_true")
+    p_run.add_argument("--strategic-disable-synchronized-payload", action="store_true")
+    p_run.add_argument("--strategic-disable-alert-cooldown", action="store_true")
+    p_run.add_argument("--strategic-disable-trust-rank-exploit", action="store_true")
+    p_run.add_argument("--strategic-disable-validator-guardrail", action="store_true")
+    p_run.add_argument("--strategic-disable-suspicion-lockout", action="store_true")
+    p_run.add_argument("--strategic-disable-cooccurrence-bridging", action="store_true")
     p_run.add_argument("--llm-model", default="gpt-5-mini")
     p_run.add_argument("--llm-temperature", type=float, default=0.3)
     p_run.add_argument("--llm-temperature-end", type=float, default=None)
@@ -1548,6 +1595,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_transfer.add_argument("--strategic-reprobe-window", type=int, default=3)
     p_transfer.add_argument("--strategic-reprobe-min-step", type=int, default=4)
     p_transfer.add_argument("--strategic-disable-reprobe", action="store_true")
+    p_transfer.add_argument("--strategic-budget-drop", type=float, default=0.7)
+    p_transfer.add_argument("--strategic-budget-hold", type=int, default=2)
+    p_transfer.add_argument("--strategic-disable-budget", action="store_true")
+    p_transfer.add_argument("--strategic-diversity-lookback", type=int, default=3)
+    p_transfer.add_argument("--strategic-diversity-max-repeat", type=int, default=2)
+    p_transfer.add_argument("--strategic-disable-diversity", action="store_true")
+    # Newly-named phase + overlay ablation toggles (default off = strategy enabled).
+    p_transfer.add_argument("--strategic-disable-probe-classify", action="store_true")
+    p_transfer.add_argument("--strategic-disable-trust-bank-opening", action="store_true")
+    p_transfer.add_argument("--strategic-disable-synchronized-payload", action="store_true")
+    p_transfer.add_argument("--strategic-disable-alert-cooldown", action="store_true")
+    p_transfer.add_argument("--strategic-disable-trust-rank-exploit", action="store_true")
+    p_transfer.add_argument("--strategic-disable-validator-guardrail", action="store_true")
+    p_transfer.add_argument("--strategic-disable-suspicion-lockout", action="store_true")
+    p_transfer.add_argument("--strategic-disable-cooccurrence-bridging", action="store_true")
     p_transfer.add_argument("--llm-model", default="gpt-5-mini")
     p_transfer.add_argument("--llm-temperature", type=float, default=0.3)
     p_transfer.add_argument("--llm-temperature-end", type=float, default=None)
