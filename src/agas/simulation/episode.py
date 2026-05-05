@@ -9,6 +9,7 @@ from agas.agents.coordinator import Coordinator
 from agas.agents.messages import EnvironmentFeedback
 from agas.agents.profile_validator import ProfileValidator
 from agas.agents.worker import WorkerAgent, WorkerState, build_worker_pool
+from agas.metrics.embedding_cluster import EmbeddingClusterMetrics, compute_embedding_cluster_metrics
 from agas.simulation.environment import AGASEnvironment
 
 
@@ -49,6 +50,8 @@ class EpisodeResult:
     stopped_early: bool = False
     stop_reason: str | None = None
     profile_validator_scores: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    embedding_cluster_metrics: dict | None = None
+    """Victim-side embedding cluster anomaly metrics. Not fed back to AGAS agents."""
 
     @property
     def final_target_rank(self) -> int:
@@ -254,6 +257,7 @@ class AGASEpisodeRunner:
                 stopped_early=stopped_early,
                 stop_reason=stop_reason,
                 profile_validator_scores={},
+                embedding_cluster_metrics=None,
             )
 
         for step in range(self.config.num_steps):
@@ -356,6 +360,10 @@ class AGASEpisodeRunner:
             if self.profile_validator is not None
             else {}
         )
+        ecm = compute_embedding_cluster_metrics(
+            model=self.environment.recommender,
+            worker_ids=list(self.workers.keys()),
+        )
         return EpisodeResult(
             history=history,
             final_rank=self.environment.current_rank,
@@ -366,6 +374,7 @@ class AGASEpisodeRunner:
             stopped_early=stopped_early,
             stop_reason=stop_reason,
             profile_validator_scores=final_scores,
+            embedding_cluster_metrics=ecm.to_dict() if ecm is not None else None,
         )
 
 

@@ -833,6 +833,7 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
                 "agent_logs": result.agent_logs,
                 "coordinator_logs": result.coordinator_logs,
                 "history": result.history,
+                "embedding_cluster_metrics": result.embedding_cluster_metrics,
             },
             f,
             indent=2,
@@ -863,6 +864,22 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
             action_text = ", ".join(f"{a['item_id']}->{a['rating']}" for a in actions) if actions else "no action"
             print(f"  {report['agent_id']} [{report['role']}] via {report.get('policy', 'rule')}: {action_text}")
     print(f"Saved detailed timeline to {out_path}")
+
+    ecm = result.embedding_cluster_metrics
+    if ecm is not None:
+        print("\n[Victim-side] Embedding cluster anomaly metrics:")
+        print(f"  Workers embedded : {ecm['n_fake_embedded']} / {args.num_agents} (coverage {ecm['coverage']:.0%})")
+        print(f"  Intra-fake cosine: mean={ecm['intra_fake_cosine_mean']:.4f}  std={ecm['intra_fake_cosine_std']:.4f}")
+        print(f"  Fake→real cosine : {ecm['fake_real_centroid_cosine_mean']:.4f}")
+        print(f"  Separation ratio : {ecm['separation_ratio']:.4f}  (>1 = fake cluster tighter than real blend)")
+        print(f"  Anomaly score    : {ecm['anomaly_score']:.4f}  (0=undetectable, 1=fully exposed)")
+        per_w = ecm.get("per_worker_cosine_distance_to_fake_centroid", {})
+        if per_w:
+            outlier = max(per_w, key=per_w.get)
+            print(f"  Most divergent   : {outlier} (cosine dist {per_w[outlier]:.4f} from fake centroid)")
+    else:
+        print("\n[Victim-side] Embedding cluster metrics: unavailable (model not yet factorized)")
+
     return 0
 
 
