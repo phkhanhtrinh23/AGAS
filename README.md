@@ -202,5 +202,4 @@ Brief summary:
 
 ## 8. License
 
-Released for academic research use. The repo carries no license file by
-default; we suggest **MIT** for downstream reuse.
+MIT License.
