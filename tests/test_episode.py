@@ -2,11 +2,18 @@
 
 from pathlib import Path
 
+import pytest
+
 from agas.agents.coordinator import RuleBasedCoordinatorPolicy
 from agas.data.pipeline import load_interactions, load_items, preprocess_all_datasets
 from agas.recsys.surrogate import LightweightSurrogateRecommender, SurrogateConfig
 from agas.simulation.environment import AGASEnvironment
 from agas.simulation.episode import AGASEpisodeRunner, EpisodeConfig
+
+pytestmark = pytest.mark.skipif(
+    not Path("data/ml-latest-small").exists(),
+    reason="Raw MovieLens dataset not present locally; skip episode integration tests.",
+)
 
 
 def test_episode_runner_smoke(tmp_path: Path) -> None:

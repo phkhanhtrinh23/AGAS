@@ -31,25 +31,48 @@ except ImportError:  # agas.data is optional (only needed for preprocess command
     preprocess_all = None  # type: ignore[assignment]
 from agas.llm.providers import build_llm_client
 from agas.recsys.surrogate import LightweightSurrogateRecommender, SurrogateConfig
-from agas.recsys.targets import (
-    BPRMFRecommender,
-    CDAERecommender,
-    GCMCRecommender,
-    GMFRecommender,
-    IAutoRecRecommender,
-    ItemKNNRecommender,
-    LightGCNRecommender,
-    MFRecommender,
-    NGCFRecommender,
-    NMFRecommender,
-    NeuMFRecommender,
-    PMFRecommender,
-    SequentialRecommender,
-    SVDppRecommender,
-    TargetModelConfig,
-    UAutoRecRecommender,
-    WMFRecommender,
-)
+
+# Torch-dependent target recommender classes are imported lazily so that the
+# CLI module remains importable in installs without the optional ``targets``
+# extra (used by the test environment, doc builds and the rule-based fallback).
+try:  # pragma: no cover - exercised by both branches in CI
+    from agas.recsys.targets import (
+        BPRMFRecommender,
+        CDAERecommender,
+        GCMCRecommender,
+        GMFRecommender,
+        IAutoRecRecommender,
+        ItemKNNRecommender,
+        LightGCNRecommender,
+        MFRecommender,
+        NGCFRecommender,
+        NMFRecommender,
+        NeuMFRecommender,
+        PMFRecommender,
+        SequentialRecommender,
+        SVDppRecommender,
+        TargetModelConfig,
+        UAutoRecRecommender,
+        WMFRecommender,
+    )
+except ImportError:  # pragma: no cover - install without the targets extra
+    BPRMFRecommender = None  # type: ignore[assignment]
+    CDAERecommender = None  # type: ignore[assignment]
+    GCMCRecommender = None  # type: ignore[assignment]
+    GMFRecommender = None  # type: ignore[assignment]
+    IAutoRecRecommender = None  # type: ignore[assignment]
+    ItemKNNRecommender = None  # type: ignore[assignment]
+    LightGCNRecommender = None  # type: ignore[assignment]
+    MFRecommender = None  # type: ignore[assignment]
+    NGCFRecommender = None  # type: ignore[assignment]
+    NMFRecommender = None  # type: ignore[assignment]
+    NeuMFRecommender = None  # type: ignore[assignment]
+    PMFRecommender = None  # type: ignore[assignment]
+    SequentialRecommender = None  # type: ignore[assignment]
+    SVDppRecommender = None  # type: ignore[assignment]
+    TargetModelConfig = None  # type: ignore[assignment]
+    UAutoRecRecommender = None  # type: ignore[assignment]
+    WMFRecommender = None  # type: ignore[assignment]
 from agas.simulation.environment import AGASEnvironment, DefenseConfig
 from agas.agents.defender import DefenseMonitorConfig
 from agas.simulation.episode import AGASEpisodeRunner, EpisodeConfig, default_agent_ids

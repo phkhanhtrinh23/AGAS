@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from agas.agents.coordinator import Coordinator, RuleBasedCoordinatorPolicy
 from agas.agents.worker import build_worker_pool
 from agas.data.pipeline import PreprocessConfig, preprocess_all
@@ -11,6 +13,10 @@ from agas.simulation.environment import AGASEnvironment
 from agas.simulation.episode import AGASEpisodeRunner, EpisodeConfig, default_agent_ids
 
 
+@pytest.mark.skipif(
+    not Path("data/ml-latest-small").exists(),
+    reason="Raw MovieLens dataset not present locally; skip end-to-end smoke test.",
+)
 def test_episode_smoke(tmp_path: Path) -> None:
     """Check that a 4-step episode completes and returns valid final rank metadata."""
 

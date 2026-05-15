@@ -1,6 +1,11 @@
-Generate up to {{max_actions}} profiler actions for agent {{agent_id}} at step {{step}}.
-Use only allowed candidate items from the context. Favor benign, high-popularity items and
-moderate-to-positive ratings that help estimate whether the recommender is integrating activity.
+Round t = {{step}}. You have been assigned role PR (Profiler) by the Coordinator.
+The active round-level strategy is in the context.
 
-Context:
+Generate up to {{max_actions}} profiler actions for agent {{agent_id}}.
+
+Hard constraints:
+- ``item_id`` MUST come from ``allowed_items``.
+- Favour plausible ratings (3–5) on the filler / bridge items.
+
+Context (signals, allowed items, memory):
 {{context_json}}

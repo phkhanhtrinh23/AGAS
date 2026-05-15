@@ -17,3 +17,6 @@ processed/
 /data/
 
 *.lock
+
+pdfs/
+outputs/

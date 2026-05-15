@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from agas.agents.coordinator import Coordinator, LLMCoordinatorPolicy
 from agas.agents.messages import AgentRole, CoordinatorObservation, RatingAction, RoleAssignment, WorkerActionReport
 from agas.agents.worker import WorkerAgent, WorkerContext, WorkerState
@@ -9,6 +11,11 @@ from agas.data.pipeline import load_interactions, load_items, preprocess_all_dat
 from agas.llm.prompt_store import PromptStore
 from agas.recsys.surrogate import LightweightSurrogateRecommender, SurrogateConfig
 from agas.simulation.environment import AGASEnvironment, DefenseConfig
+
+_REQUIRES_DATA = pytest.mark.skipif(
+    not Path("data/ml-latest-small").exists(),
+    reason="Raw MovieLens dataset not present locally; skip data-dependent black-box test.",
+)
 
 
 class StaticClient:
@@ -35,6 +42,7 @@ class RaisingClient:
         raise RuntimeError(self.message)
 
 
+@_REQUIRES_DATA
 def test_black_box_observation_hides_internal_detection(tmp_path: Path) -> None:
     """Ensure coordinator observations expose only black-box signals, not hidden alerts."""
 

@@ -1,6 +1,13 @@
-Generate up to {{max_actions}} sniper actions for agent {{agent_id}} at step {{step}}.
-Use only allowed candidate items from the context. The target item should receive the strongest
-positive rating. If competitor items are used, use strong negative ratings sparingly.
+Round t = {{step}}. You have been assigned role SN (Sniper) by the Coordinator.
+The active round-level strategy is in the context.
 
-Context:
+Generate up to {{max_actions}} sniper actions for agent {{agent_id}}.
+
+Reminders:
+- For embedding-style victims rate the target at 5.0 and (optionally) 1–2
+  competitors at 1.0.
+- For graph-style victims do NOT rate the target directly; rate items from
+  the bridge / cluster pool instead.
+
+Context (signals, allowed items, memory):
 {{context_json}}

@@ -1,6 +1,11 @@
-Generate up to {{max_actions}} camouflaguer actions for agent {{agent_id}} at step {{step}}.
-Use only allowed candidate items from the context. Favor plausible target-cluster items and,
-when risk looks elevated, mix in benign noise items.
+Round t = {{step}}. You have been assigned role CA (Camouflageur) by the
+Coordinator. The active round-level strategy is in the context.
 
-Context:
+Generate up to {{max_actions}} camouflage actions for agent {{agent_id}}.
+
+Hard constraints:
+- ``item_id`` MUST come from ``allowed_items``.
+- Ratings should look natural (3–5). Do NOT rate the target item.
+
+Context (signals, allowed items, memory):
 {{context_json}}

@@ -1,11 +1,32 @@
-"""LLM backend adapters (OpenAI and Ollama)."""
+"""LLM backend adapters.
+
+The paper's headline configuration uses the **OpenAI API** as the LLM backbone
+for both the Coordinator and the worker policies. The :class:`RuleBasedProvider`
+is a minimal deterministic fallback used when ``OPENAI_API_KEY`` is missing —
+this keeps the smoke tests and the public demo runnable without network access
+or a paid API key.
+
+Provider selection order at runtime
+-----------------------------------
+1. ``provider="openai"`` (default) with a non-empty ``OPENAI_API_KEY`` → use
+   :class:`OpenAIClient` with the model from ``OPENAI_MODEL`` (default
+   ``gpt-5.1``).
+2. ``provider="rule"`` or ``OPENAI_API_KEY`` missing → fall back to
+   :class:`RuleBasedProvider` (emits an empty JSON action list; the worker /
+   coordinator then drops back to its own rule-based policy).
+3. ``provider="ollama"`` is also supported for local experiments.
+"""
 
 from __future__ import annotations
 
+import logging
+import os
 from dataclasses import dataclass
 from typing import Any, Protocol
 
 import requests
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -155,22 +176,72 @@ class OllamaClient:
         return str(data.get("response", "")).strip()
 
 
-def build_llm_client(provider: str, model: str, api_key: str | None = None, host: str | None = None) -> LLMClient:
-    """Factory for LLM clients.
+@dataclass
+class RuleBasedProvider:
+    """Deterministic fallback provider.
+
+    This client returns an empty JSON action payload so that the calling
+    Coordinator / Worker immediately falls back to its own rule-based logic
+    (the rule fallback is implemented inside :mod:`agas.agents.worker` and
+    :mod:`agas.agents.coordinator`). It is the provider used when no
+    ``OPENAI_API_KEY`` is configured.
+
+    Returning an empty actions list is deliberate: it makes the rule fallback
+    the *single* deterministic policy when LLM access is unavailable, instead
+    of trying to imitate an LLM response.
+    """
+
+    model: str = "rule-based"
+
+    def generate(self, request: LLMRequest) -> str:  # noqa: D401 - protocol impl
+        """Always return an empty action list to force the rule fallback path."""
+
+        return '{"actions": [], "strategy": null, "rationale": "rule-based fallback"}'
+
+
+def build_llm_client(
+    provider: str | None = None,
+    model: str | None = None,
+    api_key: str | None = None,
+    host: str | None = None,
+) -> LLMClient:
+    """Factory for LLM clients with paper-aligned defaults.
+
+    Defaults
+    --------
+    * ``provider`` defaults to ``"openai"`` (the paper backbone).
+    * ``model`` defaults to the value of the ``OPENAI_MODEL`` environment
+      variable, falling back to ``"gpt-5.1"`` if unset.
+    * When ``OPENAI_API_KEY`` is missing the function emits a single warning
+      and returns a :class:`RuleBasedProvider`, regardless of ``provider``.
 
     Args:
-        provider: Backend name (``openai`` or ``ollama``).
-        model: Model identifier passed to the provider backend.
-        api_key: Optional OpenAI API key for ``openai`` provider.
-        host: Optional Ollama base URL for ``ollama`` provider.
+        provider: ``"openai"`` (default), ``"ollama"`` or ``"rule"``.
+        model: Model identifier passed to the chosen backend.
+        api_key: OpenAI API key; defaults to ``OPENAI_API_KEY`` env var.
+        host: Optional Ollama base URL.
 
     Returns:
         Configured LLM client implementation.
     """
 
-    provider = provider.lower().strip()
+    provider = (provider or "openai").lower().strip()
+    resolved_model = model or os.environ.get("OPENAI_MODEL", "gpt-5.1")
+    resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
+
+    if provider == "rule":
+        return RuleBasedProvider(model=resolved_model)
+
     if provider == "openai":
-        return OpenAIClient(model=model, api_key=api_key)
+        if not resolved_key:
+            _logger.warning(
+                "OPENAI_API_KEY is not set. Falling back to RuleBasedProvider — "
+                "results will be deterministic and not LLM-driven."
+            )
+            return RuleBasedProvider(model=resolved_model)
+        return OpenAIClient(model=resolved_model, api_key=resolved_key)
+
     if provider == "ollama":
-        return OllamaClient(model=model, host=host or "http://localhost:11434")
+        return OllamaClient(model=resolved_model, host=host or "http://localhost:11434")
+
     raise ValueError(f"Unsupported provider: {provider}")

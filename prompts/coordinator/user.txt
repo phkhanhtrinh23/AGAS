@@ -1,15 +1,11 @@
-Decide the next-step role for each agent using the black-box observation below.
+Round t = {{step}} of T = {{total_steps}}.
 
-Guidance:
-- Prefer profiler when you need to probe whether the system is still accepting ratings.
-- Keep at least one profiler active periodically during a long run so the group keeps
-  checking whether ratings are being integrated.
-- Prefer camouflaguer when suppression or discounting is visible.
-- Prefer inactive when an agent's suppression streak or suspicion is high.
-- Prefer sniper only when the target still needs promotion and recent signals suggest the
-  agent can act with acceptable risk.
-- If per-agent memory is provided, use it to identify which workers recently had actions
-  dropped or heavily discounted, and rotate them into inactive/camouflage as needed.
+Pick exactly one strategy from {S1_VICTIM_PROBE, S2_BRIDGE_BUILDING, S3_WARM_UP,
+S4_FIRST_PUSH, S5_SILENT_SLOWDOWN, S6_PROFILE_CLEANUP, S7_SAFE_REPLACEMENT,
+S8_MAIN_ATTACK}, then assign exactly one role from {PR, SN, CA, IN} to every
+worker listed below.
 
-Observation:
+Black-box observation for this round:
 {{context_json}}
+
+Decide using the trigger rules in the system prompt. Return JSON only.

@@ -1,4 +1,7 @@
-No actions are required for agent {{agent_id}} at step {{step}}.
+Round t = {{step}}. You have been assigned role IN (Inactive).
 
-Context:
+No actions are required for agent {{agent_id}} this round. Return an empty
+action list.
+
+Context (signals, memory — for awareness only):
 {{context_json}}

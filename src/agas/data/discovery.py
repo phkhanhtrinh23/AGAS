@@ -1,4 +1,17 @@
-"""Dataset adapter registry and discovery."""
+"""Dataset adapter registry and discovery.
+
+The public benchmark in ``experiment.tex`` uses exactly six datasets:
+
+* MovieLens-100K (ML-100K)
+* MovieLens-1M (ML-1M)
+* MovieLens Tag Genome 2021 (Genome 2021)
+* Netflix Prize (Netflix)
+* Douban Movie (Douban)
+* Amazon Reviews 2018 (Amazon)
+
+The default adapter registry therefore only enables loaders for those six
+families plus the tiny ``ml-latest-small`` sample used by the smoke tests.
+"""
 
 from __future__ import annotations
 
@@ -7,33 +20,28 @@ from typing import Iterable, List
 
 from agas.data.loaders.amazon_review import AmazonReviewAdapter
 from agas.data.loaders.base import DatasetAdapter
-from agas.data.loaders.fake_review import FakeReviewAdapter
 from agas.data.loaders.genome2021 import Genome2021Adapter
-from agas.data.loaders.market_bias import MarketBiasAdapter
-from agas.data.loaders.ml20m_fractal import ML20MFractalAdapter
 from agas.data.loaders.movielens import MovieLensAdapter
-from agas.data.loaders.music_in_car import MusicInCarAdapter
 from agas.data.loaders.netflix import NetflixAdapter
 
 
 def build_default_adapters() -> List[DatasetAdapter]:
-    """Return all adapters supported by this repository."""
+    """Return adapters for the six datasets used by the paper, plus the
+    ``ml-latest-small`` sample used by smoke tests."""
 
     return [
         MovieLensAdapter("ml-latest-small"),
-        MovieLensAdapter("ml-latest"),
-        MovieLensAdapter("ml-32m"),
-        ML20MFractalAdapter(),
+        MovieLensAdapter("ml-100k"),
+        MovieLensAdapter("ml-1m"),
         Genome2021Adapter(),
         NetflixAdapter(),
         AmazonReviewAdapter(),
-        FakeReviewAdapter(),
-        MarketBiasAdapter(),
-        MusicInCarAdapter(),
     ]
 
 
-def discover_available_adapters(data_root: Path, adapters: Iterable[DatasetAdapter] | None = None) -> List[DatasetAdapter]:
+def discover_available_adapters(
+    data_root: Path, adapters: Iterable[DatasetAdapter] | None = None
+) -> List[DatasetAdapter]:
     """Return adapters whose required files exist in ``data_root``.
 
     Args:
