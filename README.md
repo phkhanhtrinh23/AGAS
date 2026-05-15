@@ -85,7 +85,22 @@ The Coordinator drives those decisions from two signal groups (`signals.py`):
 The outer loop is implemented in `src/agas/simulation/episode.py` and mirrors
 `algorithms/agas_end_to_end.tex`.
 
-## 3. Install
+## 3. Environment
+
+| Component      | Requirement           | Tested with        |
+|----------------|-----------------------|--------------------|
+| Python         | ≥ 3.10                | 3.13.5             |
+| PyTorch        | ≥ 2.1 *(targets only)*| 2.11.0+cu128       |
+| CUDA           | optional              | 12.8               |
+| NumPy          | ≥ 1.24                | 2.4.2              |
+| Pandas         | ≥ 2.0                 | 3.0.1              |
+| SciPy          | ≥ 1.10                | 1.17.0             |
+| scikit-learn   | ≥ 1.3                 | 1.8.0              |
+| openai SDK     | ≥ 1.12                | 2.21.0             |
+
+PyTorch and CUDA are only required for the deep-learning victim models (`[targets]` extra). The core AGAS loop and the rule-based / surrogate paths run on CPU with no GPU dependency.
+
+## 4. Install
 
 ```bash
 pip install -e .
