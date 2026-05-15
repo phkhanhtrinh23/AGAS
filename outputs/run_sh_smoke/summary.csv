@@ -1,2 +1,0 @@
-seed,final_rank,best_rank,goal_reached,output_json
-42,178,178,0,outputs/run_sh_smoke/episode_seed_42.json
