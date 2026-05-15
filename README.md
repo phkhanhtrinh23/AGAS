@@ -7,6 +7,8 @@ of rounds. In each round, the Coordinator picks one of eight strategies
 and assigns a role to every worker. Workers then decide which items to rate
 using their own ReAct-style reasoning loop.
 
+![AGAS pipeline](figures/agas_pipeline.png)
+
 ---
 
 ## 1. Repo overview
