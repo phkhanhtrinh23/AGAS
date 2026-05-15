@@ -104,14 +104,14 @@ Required environment variables:
 
 The paper evaluates on six public CF benchmarks (see `experiment.tex`):
 
-| Short name  | Source                                       | Place raw files in       |
-|-------------|----------------------------------------------|--------------------------|
-| ML-100K     | MovieLens 100K                               | `data/ml-100k/`          |
-| ML-1M       | MovieLens 1M                                 | `data/ml-1m/`            |
-| Genome 2021 | MovieLens Tag Genome 2021                    | `data/genome2021/`       |
-| Netflix     | Netflix Prize                                | `data/netflix/`          |
-| Douban      | Douban Movie                                 | `data/douban/`           |
-| Amazon      | Amazon Reviews 2018                          | `data/amazon/`           |
+| Short name  | Source                    | Download                                                                        | Place raw files in  |
+|-------------|---------------------------|---------------------------------------------------------------------------------|---------------------|
+| ML-100K     | MovieLens 100K            | https://files.grouplens.org/datasets/movielens/ml-100k.zip                      | `data/ml-100k/`     |
+| ML-1M       | MovieLens 1M              | https://files.grouplens.org/datasets/movielens/ml-1m.zip                        | `data/ml-1m/`       |
+| Genome 2021 | MovieLens Tag Genome 2021 | https://grouplens.org/datasets/movielens/tag-genome-2021/                       | `data/genome2021/`  |
+| Netflix     | Netflix Prize             | https://www.kaggle.com/datasets/netflix-inc/netflix-prize-data                  | `data/netflix/`     |
+| Douban      | Douban Movie              | http://shichuan.org/HIN_dataset.html                                            | `data/douban/`      |
+| Amazon      | Amazon Reviews 2018       | https://nijianmo.github.io/amazon/index.html                                    | `data/amazon/`      |
 
 After dropping the raw downloads into `data/<dataset>/`, run:
 
