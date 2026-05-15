@@ -119,14 +119,14 @@ Required environment variables:
 
 The paper evaluates on six public CF benchmarks (see `experiment.tex`):
 
-| Short name  | Source                    | Download                                                                        | Place raw files in  |
-|-------------|---------------------------|---------------------------------------------------------------------------------|---------------------|
-| ML-100K     | MovieLens 100K            | https://files.grouplens.org/datasets/movielens/ml-100k.zip                      | `data/ml-100k/`     |
-| ML-1M       | MovieLens 1M              | https://files.grouplens.org/datasets/movielens/ml-1m.zip                        | `data/ml-1m/`       |
-| Genome 2021 | MovieLens Tag Genome 2021 | https://grouplens.org/datasets/movielens/tag-genome-2021/                       | `data/genome2021/`  |
-| Netflix     | Netflix Prize             | https://www.kaggle.com/datasets/netflix-inc/netflix-prize-data                  | `data/netflix/`     |
-| Douban      | Douban Movie              | http://shichuan.org/HIN_dataset.html                                            | `data/douban/`      |
-| Amazon      | Amazon Reviews 2018       | https://nijianmo.github.io/amazon/index.html                                    | `data/amazon/`      |
+| Short name  | Source                    | Users     | Items  | Interactions       | Download                                                          | Place raw files in  |
+|-------------|---------------------------|----------:|-------:|-------------------:|-------------------------------------------------------------------|---------------------|
+| ML-100K     | MovieLens 100K            |       943 |  1,682 |            100,000 | [GroupLens](https://files.grouplens.org/datasets/movielens/ml-100k.zip) | `data/ml-100k/`     |
+| ML-1M       | MovieLens 1M              |     6,040 |  3,706 |          1,000,209 | [GroupLens](https://files.grouplens.org/datasets/movielens/ml-1m.zip)   | `data/ml-1m/`       |
+| Genome 2021 | MovieLens Tag Genome 2021 |    37,941 | 84,661 | 2,000,000 (capped) | [GroupLens](https://grouplens.org/datasets/movielens/tag-genome-2021/)  | `data/genome2021/`  |
+| Netflix     | Netflix Prize             |   342,445 | 17,434 | 2,000,000 (capped) | [Kaggle](https://www.kaggle.com/datasets/netflix-inc/netflix-prize-data) | `data/netflix/`     |
+| Douban      | Douban Movie              |    28,057 | 49,176 |          8,085,679 | [HKUST](http://shichuan.org/HIN_dataset.html)                     | `data/douban/`      |
+| Amazon      | Amazon Reviews 2018       |   998,653 | 30,964 | 2,000,000 (capped) | [UCSD](https://nijianmo.github.io/amazon/index.html)              | `data/amazon/`      |
 
 After dropping the raw downloads into `data/<dataset>/`, run:
 
@@ -137,6 +137,21 @@ python scripts/preprocess_all.py --data-root data --output-root processed
 Each dataset is rewritten into canonical `interactions.csv` + `items.csv`
 files under `processed/<dataset>/`. The smoke tests use the much smaller
 `ml-latest-small` sample that ships with MovieLens.
+
+### Train / test split protocol
+
+The preprocessing pipeline stores **no split files** — it exports the full
+interaction log. Splits are applied at runtime:
+
+| Stage | Data used | Details |
+|-------|-----------|---------|
+| **Training** | All interactions in `interactions.csv` | The surrogate (and any target model) is fit on the complete set of historical ratings. |
+| **Attack evaluation** | Ranking over **segment users** | After each round, the target item's mean rank is measured across real benign users who rated ≥ 4.0 on at least one target-cluster item (up to 2 000 users). No held-out test set is written to disk. |
+| **Fake injection** | Appended in-memory | Fake-user interactions are appended and the model is incrementally re-fit each round. They are never mixed into the canonical CSV files. |
+
+This follows the standard shilling-attack evaluation protocol: the attacker
+observes the victim's rankings on **training-set users** and optimises
+accordingly, mimicking a black-box deployment scenario.
 
 ## 5. How to run
 
