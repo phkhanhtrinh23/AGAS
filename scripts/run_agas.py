@@ -138,7 +138,7 @@ def _parse_args() -> argparse.Namespace:
         "--provider",
         type=str,
         default="openai",
-        choices=("openai", "ollama", "rule"),
+        choices=("openai", "ollama"),
         help="LLM provider for Coordinator and worker policies (default openai).",
     )
     parser.add_argument(
@@ -171,9 +171,9 @@ def main(argv: list[str] | None = None) -> int:
         "--target-keyword",
         args.target_keyword,
         "--coordinator-policy",
-        ("openai" if args.provider == "openai" else "rule"),
+        ("openai" if args.provider == "openai" else "ollama"),
         "--worker-policy",
-        ("openai" if args.provider == "openai" else "rule"),
+        ("openai" if args.provider == "openai" else "ollama"),
         "--llm-model",
         args.model,
         "--output",
