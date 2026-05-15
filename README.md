@@ -222,13 +222,13 @@ Brief summary:
 
 ## 7. Reproducing tables and figures
 
-| Research question | Script                                | Paper artifacts                                                                                                                |
-|-------------------|---------------------------------------|---------------------------------------------------------------------------------------------------------------------------------|
-| RQ1 (Performance) | `bash/run_performance.sh`              | `tables/benchmark_unpopular.tex`, `figures/benchmark_popularity_regime_summary.png`                                            |
-| RQ2 (Stealth)     | `bash/run_stealth_and_detect.sh`       | `figures/benchmark_fig7_tsne_distance_users_target.png`, `figures/stealth_tsne_clean_vs_fake.png`                              |
-| RQ3 (Detectors)   | `bash/run_stealth_and_detect.sh`       | `tables/detection_mf.tex`, `figures/detect_rec10_by_victim.png`                                                                |
-| RQ4 (Ablation)    | `bash/run_ablation.sh`                 | `figures/ablation_summary.png`, `figures/ablation_strategy_heatmap.png`, `figures/ablation_size_heatmap.png`, `tables/ablation_backbones.tex` |
-| RQ5 (Efficiency)  | `bash/run_efficiency.sh`               | `figures/efficiency_rounds_tradeoff.png`, `figures/efficiency_method_time_compare.png`, `figures/efficiency_token_topk.png`, `figures/efficiency_agents_tradeoff.png` |
+| Research question | Script                           |
+|-------------------|----------------------------------|
+| RQ1 (Performance) | `bash/run_performance.sh`        |
+| RQ2 (Stealth)     | `bash/run_stealth_and_detect.sh` |
+| RQ3 (Detectors)   | `bash/run_stealth_and_detect.sh` |
+| RQ4 (Ablation)    | `bash/run_ablation.sh`           |
+| RQ5 (Efficiency)  | `bash/run_efficiency.sh`         |
 
 ## 8. Reproduced results from the paper
 
