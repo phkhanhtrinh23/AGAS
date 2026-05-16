@@ -177,8 +177,8 @@ python scripts/run_agas.py \
 | `--victim`     | One of the 11 victims from `experiment.tex` (`mf`, `bpr`, `neumf`, `gmf`, `ncf`, `ngcf`, `lightgcn`, `simgcl`, `xsimgcl`, `egcf`, `lightccf`). |
 | `--rounds`     | Number of AGAS rounds `T` (paper default `18`).                                                  |
 | `--seed`       | Random seed (paper averages over five).                                                          |
-| `--n_workers`  | Fake-user pool size `|U_f|`.                                                                     |
-| `--budget`     | Per-user interaction budget `L`, expressed as a fraction of `|U|`.                                |
+| `--n_workers`  | Fake-user pool size |
+| `--budget`     | Per-user interaction budget `L`, expressed as a fraction of.                                |
 | `--out`        | Output JSON path for the full episode trace and summary metrics.                                 |
 
 ### Reproducing each research question on a tiny ML-100K sample
