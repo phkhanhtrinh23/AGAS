@@ -1,4 +1,4 @@
-# AGAS: Agentic Group Attack System for Recommender Systems
+# An Efficient and Effective Agentic Group Shilling Attack on Recommender Systems
 
 This is the official code to the paper: "An Efficient and Effective Agentic Group Shilling Attack on Recommender Systems". This paper introduces AGAS, which is an
 LLM-driven shilling attack against black-box collaborative-filtering recommenders. One
