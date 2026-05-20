@@ -1206,7 +1206,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 )
 
         bridge_method = getattr(args, "profiler_bridge_method", "none")
-        if bridge_method in ("cooccurrence", "gradient", "auto"):
+        if bridge_method in ("cooccurrence", "gradient", "auto", "low_degree_structural"):
             n_bridge = max(50, int(getattr(args, "profiler_actions", 3)) * 4)
             auto_threshold = int(getattr(args, "profiler_bridge_auto_threshold", 100))
             n_found = len(base_env.compute_bridge_items(n=n_bridge, method=bridge_method, auto_threshold=auto_threshold))
@@ -1783,10 +1783,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--profiler-bridge-method",
         default="none",
-        choices=["none", "cooccurrence", "gradient", "auto"],
+        choices=["none", "cooccurrence", "gradient", "auto", "low_degree_structural"],
         help="How to compute bridge items for the profiler pool. "
              "'cooccurrence' finds items sharing users with the target segment. "
-             "'gradient' requires a fitted LightGCN surrogate.",
+             "'gradient' requires a fitted LightGCN surrogate. "
+             "'low_degree_structural' selects 2-hop items outside the target cluster scored by proximity/sqrt(degree).",
     )
     p_run.add_argument("--profiler-use-cluster", action="store_true", default=False,
                        help="Profiler always draws from target cluster items (not benchmark).")
@@ -2065,13 +2066,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_transfer.add_argument(
         "--profiler-bridge-method",
-        choices=["none", "cooccurrence", "gradient", "auto"],
+        choices=["none", "cooccurrence", "gradient", "auto", "low_degree_structural"],
         default="none",
         help=(
             "Strategy for selecting profiler bridge items to create 2-hop paths to the target. "
             "'cooccurrence': items most frequently co-rated with target by segment users — best for cold/tail targets. "
             "'gradient': ranks items by d(score(fake_user,target))/d(w_j) on frozen LightGCN — best for warm/popular targets. "
             "'auto': selects cooccurrence if target ratings < --profiler-bridge-auto-threshold, else gradient. "
+            "'low_degree_structural': 2-hop items outside the cluster scored by proximity/sqrt(degree) — avoids degree inflation. "
             "Only effective when --episode-model lightgcn is set."
         ),
     )

@@ -300,7 +300,12 @@ class AGASEnvironment:
             print(f"Auto bridge method: target has {target_ratings} ratings → using {method}")
 
         try:
-            if method == "cooccurrence":
+            if method == "low_degree_structural":
+                self.bridge_items = self._compute_bridge_items_low_degree_structural(
+                    target_item_id=self.target_item_id,
+                    n=n,
+                )
+            elif method == "cooccurrence":
                 if is_lightgcn:
                     self.bridge_items = self.recommender.select_bridge_items_by_cooccurrence(
                         target_item_id=self.target_item_id,
@@ -354,6 +359,52 @@ class AGASEnvironment:
         seg_df = df[df["user_id"].isin(segment_users) & (df["item_id"] != target)]
         cooc = seg_df.groupby("item_id").size().sort_values(ascending=False)
         return cooc.index.astype(str).tolist()[:n]
+
+    def _compute_bridge_items_low_degree_structural(
+        self,
+        target_item_id: str,
+        positive_threshold: float = 4.0,
+        n: int = 50,
+    ) -> list[str]:
+        """Select 2-hop bridge items outside the target cluster, scored by proximity / sqrt(degree).
+
+        Items rated by cluster-adjacent users that are NOT already in the dense
+        neighbourhood of the target. Low-degree items are preferred because adding
+        fake edges to them causes less degree-normalisation dilution in LightGCN.
+        """
+        df = self.base_interactions.copy()
+        df["item_id"] = df["item_id"].astype(str)
+        df["user_id"] = df["user_id"].astype(str)
+        target = str(target_item_id)
+
+        seg_mask = (df["item_id"] == target) & (df["rating"] >= positive_threshold)
+        segment_users: set[str] = set(df.loc[seg_mask, "user_id"])
+        if not segment_users:
+            segment_users = set(df.loc[df["item_id"] == target, "user_id"])
+        if not segment_users:
+            return []
+
+        cluster_items: set[str] = set(
+            df.loc[df["user_id"].isin(segment_users) & (df["item_id"] != target), "item_id"]
+        )
+        cluster_raters: set[str] = set(df.loc[df["item_id"].isin(cluster_items), "user_id"])
+
+        bridge_df = df[
+            df["user_id"].isin(cluster_raters)
+            & (~df["item_id"].isin(cluster_items))
+            & (df["item_id"] != target)
+        ]
+        if bridge_df.empty:
+            return []
+
+        degrees = df.groupby("item_id").size()
+        proximity = bridge_df.groupby("item_id")["user_id"].nunique()
+        scores = {
+            item_id: prox / (degrees.get(item_id, 1) ** 0.5)
+            for item_id, prox in proximity.items()
+        }
+        ranked = sorted(scores.items(), key=lambda x: -x[1])
+        return [item_id for item_id, _ in ranked[:n]]
 
     def build_worker_context(self) -> WorkerContext:
         """Expose candidate pools to workers.
