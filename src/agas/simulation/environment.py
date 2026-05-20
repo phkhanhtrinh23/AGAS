@@ -283,27 +283,40 @@ class AGASEnvironment:
         """
         from agas.recsys.targets.lightgcn import LightGCNRecommender
 
-        if not isinstance(self.recommender, LightGCNRecommender):
-            return []
+        is_lightgcn = isinstance(self.recommender, LightGCNRecommender)
 
         if method == "auto":
-            if self.recommender.interactions is not None:
-                df = self.recommender.interactions
-                target_ratings = int((df["item_id"].astype(str) == str(self.target_item_id)).sum())
+            # Determine based on target rating count.
+            df_ref = (
+                self.recommender.interactions
+                if (is_lightgcn and getattr(self.recommender, "interactions", None) is not None)
+                else self.base_interactions
+            )
+            if df_ref is not None:
+                target_ratings = int((df_ref["item_id"].astype(str) == str(self.target_item_id)).sum())
             else:
                 target_ratings = 0
-            method = "gradient" if target_ratings >= auto_threshold else "cooccurrence"
+            method = "gradient" if (is_lightgcn and target_ratings >= auto_threshold) else "cooccurrence"
             print(f"Auto bridge method: target has {target_ratings} ratings → using {method}")
 
         try:
             if method == "cooccurrence":
-                self.bridge_items = self.recommender.select_bridge_items_by_cooccurrence(
-                    target_item_id=self.target_item_id,
-                    n=n,
-                )
+                if is_lightgcn:
+                    self.bridge_items = self.recommender.select_bridge_items_by_cooccurrence(
+                        target_item_id=self.target_item_id,
+                        n=n,
+                    )
+                else:
+                    # Cooccurrence works on interaction data alone — no LightGCN required.
+                    self.bridge_items = self._compute_bridge_items_by_cooccurrence(
+                        target_item_id=self.target_item_id,
+                        n=n,
+                    )
             else:
-                if self.recommender.model is None or self.recommender._norm_adj is None:
-                    return []
+                # Gradient method requires a fitted LightGCN model.
+                if not is_lightgcn or self.recommender.model is None or self.recommender._norm_adj is None:
+                    self.bridge_items = []
+                    return self.bridge_items
                 all_items = list(self.recommender.item_to_idx.keys())
                 candidates = [i for i in all_items if str(i) != str(self.target_item_id)]
                 self.bridge_items = self.recommender.select_bridge_items_by_gradient(
@@ -314,6 +327,33 @@ class AGASEnvironment:
         except Exception:
             self.bridge_items = []
         return self.bridge_items
+
+    def _compute_bridge_items_by_cooccurrence(
+        self,
+        target_item_id: str,
+        positive_threshold: float = 4.0,
+        n: int = 50,
+    ) -> list[str]:
+        """Select bridge items by co-occurrence using base interaction data.
+
+        Finds items most frequently rated alongside the target by users who
+        positively rated the target.  Works without a LightGCN surrogate.
+        """
+        df = self.base_interactions.copy()
+        df["item_id"] = df["item_id"].astype(str)
+        df["user_id"] = df["user_id"].astype(str)
+        target = str(target_item_id)
+
+        segment_mask = (df["item_id"] == target) & (df["rating"] >= positive_threshold)
+        segment_users: set[str] = set(df.loc[segment_mask, "user_id"].tolist())
+        if not segment_users:
+            segment_users = set(df.loc[df["item_id"] == target, "user_id"].tolist())
+        if not segment_users:
+            return []
+
+        seg_df = df[df["user_id"].isin(segment_users) & (df["item_id"] != target)]
+        cooc = seg_df.groupby("item_id").size().sort_values(ascending=False)
+        return cooc.index.astype(str).tolist()[:n]
 
     def build_worker_context(self) -> WorkerContext:
         """Expose candidate pools to workers.

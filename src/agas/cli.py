@@ -17,8 +17,6 @@ from agas.agents.coordinator import (
     Coordinator,
     CoordinatorRuntimeConfig,
     LLMCoordinatorPolicy,
-    RuleBasedCoordinatorPolicy,
-    StrategicCoordinatorPolicy,
 )
 from agas.agents.messages import AgentRole
 from agas.agents.unified_memory import UnifiedMemory
@@ -34,7 +32,7 @@ from agas.recsys.surrogate import LightweightSurrogateRecommender, SurrogateConf
 
 # Torch-dependent target recommender classes are imported lazily so that the
 # CLI module remains importable in installs without the optional ``targets``
-# extra (used by the test environment, doc builds and the rule-based fallback).
+# extra (used by the test environment and doc builds).
 try:  # pragma: no cover - exercised by both branches in CI
     from agas.recsys.targets import (
         BPRMFRecommender,
@@ -186,7 +184,8 @@ def _fit_surrogate_from_processed(
     dataset: str,
     max_interactions: Optional[int] = None,
     n_factors: int = 32,
-) -> tuple[LightweightSurrogateRecommender, pd.DataFrame, pd.DataFrame]:
+    surrogate_model: str = "mf",
+):
     """Load canonical files, clean core columns, and fit a surrogate recommender.
 
     Args:
@@ -194,6 +193,7 @@ def _fit_surrogate_from_processed(
         dataset: Dataset folder name under ``processed_root``.
         max_interactions: Optional cap on interactions used for fitting.
         n_factors: Number of latent factors for the surrogate model.
+        surrogate_model: ``"mf"`` (default) or ``"lightgcn"``.
 
     Returns:
         Tuple ``(model, interactions, items)`` after fitting.
@@ -201,9 +201,18 @@ def _fit_surrogate_from_processed(
 
     interactions, items = _load_processed_tables(processed_root, dataset, max_interactions=max_interactions)
 
-    model = LightweightSurrogateRecommender(config=SurrogateConfig(n_factors=n_factors))
-    model.set_items(items)
-    model.fit(interactions)
+    if str(surrogate_model).lower() == "lightgcn":
+        if LightGCNRecommender is None:
+            raise RuntimeError("LightGCN requires the 'targets' extra: pip install agas[targets]")
+        config = TargetModelConfig(embedding_dim=n_factors, epochs=20, seed=42)
+        model = LightGCNRecommender(config=config)
+        print(f"Fitting LightGCN surrogate (dim={n_factors}, epochs=20)…")
+        model.fit(interactions, items)
+        print("LightGCN surrogate ready.")
+    else:
+        model = LightweightSurrogateRecommender(config=SurrogateConfig(n_factors=n_factors))
+        model.set_items(items)
+        model.fit(interactions)
     return model, interactions, items
 
 
@@ -212,6 +221,7 @@ def _build_coordinator_and_workers(
     agent_ids: list[str],
     prompt_store: PromptStore,
     total_steps: int,
+    precomputed_bridge_items: list[str] | None = None,
 ) -> tuple[Coordinator, dict[str, object]]:
     """Construct coordinator and worker pool based on CLI settings.
 
@@ -225,75 +235,19 @@ def _build_coordinator_and_workers(
         Tuple ``(coordinator, workers)``.
     """
 
-    max_snipers = int(getattr(args, "rule_max_snipers", 1))
-    if getattr(args, "command", "") == "run-transfer":
-        raw_roles = str(getattr(args, "transfer_attack_roles", "all")).strip().lower()
-        if raw_roles != "all":
-            roles = {r.strip() for r in raw_roles.split(",") if r.strip()}
-            if roles.issubset({"sniper", "diagnostic"}) and "sniper" in roles and max_snipers <= 1:
-                # Heuristic: boost snipers when transfer keeps only sniper/diagnostic rows.
-                max_snipers = max(1, min(3, int(getattr(args, "num_agents", 1))))
-        # Keep args in sync for output logging.
-        try:
-            args.rule_max_snipers = max_snipers
-        except Exception:
-            pass
-    if args.coordinator_policy == "rule":
-        policy = RuleBasedCoordinatorPolicy(
-            agent_order=agent_ids,
-            max_snipers=max_snipers,
-            sniper_start_step=int(getattr(args, "sniper_start_step", 0)),
-            enable_trust_bank_opening=not bool(getattr(args, "strategic_disable_trust_bank_opening", False)),
-            enable_synchronized_payload=not bool(getattr(args, "strategic_disable_synchronized_payload", False)),
-            enable_alert_cooldown=not bool(getattr(args, "strategic_disable_alert_cooldown", False)),
-            enable_trust_rank_exploit=not bool(getattr(args, "strategic_disable_trust_rank_exploit", False)),
-            enable_validator_guardrail=not bool(getattr(args, "strategic_disable_validator_guardrail", False)),
-        )
-        # PROBE_CLASSIFY toggle is honoured even for rule-based.
-        policy.enable_probe_classify = not bool(getattr(args, "strategic_disable_probe_classify", False))
-    elif args.coordinator_policy == "strategic":
-        policy = StrategicCoordinatorPolicy(
-            agent_order=agent_ids,
-            max_snipers=max_snipers,
-            sniper_start_step=int(getattr(args, "sniper_start_step", 0)),
-            stealth_aggregate_mean=float(getattr(args, "strategic_stealth_aggregate", 0.70)),
-            stealth_streak=int(getattr(args, "strategic_stealth_streak", 2)),
-            stealth_cooldown_steps=int(getattr(args, "strategic_stealth_cooldown", 3)),
-            enable_stealth_rebuild=not bool(getattr(args, "strategic_disable_stealth", False)),
-            reprobe_window=int(getattr(args, "strategic_reprobe_window", 3)),
-            reprobe_min_step=int(getattr(args, "strategic_reprobe_min_step", 4)),
-            enable_consensus_hold=not bool(getattr(args, "strategic_disable_reprobe", False)),
-            budget_pressure_drop_ratio=float(getattr(args, "strategic_budget_drop", 0.7)),
-            budget_pressure_hold_steps=int(getattr(args, "strategic_budget_hold", 2)),
-            enable_budget_pressure=not bool(getattr(args, "strategic_disable_budget", False)),
-            diversity_lookback=int(getattr(args, "strategic_diversity_lookback", 3)),
-            diversity_max_repeat=int(getattr(args, "strategic_diversity_max_repeat", 2)),
-            enable_diversity=not bool(getattr(args, "strategic_disable_diversity", False)),
-            enable_probe_classify=not bool(getattr(args, "strategic_disable_probe_classify", False)),
-            enable_trust_bank_opening=not bool(getattr(args, "strategic_disable_trust_bank_opening", False)),
-            enable_synchronized_payload=not bool(getattr(args, "strategic_disable_synchronized_payload", False)),
-            enable_alert_cooldown=not bool(getattr(args, "strategic_disable_alert_cooldown", False)),
-            enable_trust_rank_exploit=not bool(getattr(args, "strategic_disable_trust_rank_exploit", False)),
-            enable_validator_guardrail=not bool(getattr(args, "strategic_disable_validator_guardrail", False)),
-            enable_suspicion_lockout=not bool(getattr(args, "strategic_disable_suspicion_lockout", False)),
-            enable_cooccurrence_bridging=not bool(getattr(args, "strategic_disable_cooccurrence_bridging", False)),
-        )
+    if args.coordinator_policy == "openai":
+        client = build_llm_client(provider="openai", model=args.llm_model, api_key=args.openai_api_key or os.getenv("OPENAI_API_KEY"))
     else:
-        if args.coordinator_policy == "openai":
-            api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise RuntimeError("OPENAI_API_KEY is required for OpenAI coordinator policy")
-            client = build_llm_client(provider="openai", model=args.llm_model, api_key=api_key)
-        else:
-            client = build_llm_client(provider="ollama", model=args.llm_model, host=args.ollama_host)
-        policy = LLMCoordinatorPolicy(
-            client=client,
-            agent_order=agent_ids,
-            prompt_store=prompt_store,
-            temperature=args.llm_temperature,
-            temperature_end=args.llm_temperature_end,
-            total_steps=total_steps,
-        )
+        client = build_llm_client(provider="ollama", model=args.llm_model, host=args.ollama_host)
+    policy = LLMCoordinatorPolicy(
+        client=client,
+        agent_order=agent_ids,
+        prompt_store=prompt_store,
+        temperature=args.llm_temperature,
+        temperature_end=args.llm_temperature_end,
+        total_steps=total_steps,
+        precomputed_bridge_items=precomputed_bridge_items or [],
+    )
 
     lock_role = AgentRole.INACTIVE
     if getattr(args, "sniper_lock_role", None):
@@ -313,15 +267,15 @@ def _build_coordinator_and_workers(
         sniper_lock_memory_events=args.sniper_lock_memory_events,
         sniper_lock_role=lock_role,
         transfer_sniper_direct_target=False,
-        enable_suspicion_lockout=not bool(getattr(args, "strategic_disable_suspicion_lockout", False)),
+        enable_suspicion_lockout=True,
     )
-    # If transfer extraction keeps only sniper (and optionally diagnostic) rows,
-    # force direct-target snipers so the injected set contains target positives.
+    # If transfer extraction keeps only sniper rows, force direct-target snipers
+    # so the injected set contains target positives.
     if getattr(args, "command", "") == "run-transfer":
         raw_roles = str(getattr(args, "transfer_attack_roles", "all")).strip().lower()
         if raw_roles != "all":
             roles = {r.strip() for r in raw_roles.split(",") if r.strip()}
-            if roles.issubset({"sniper", "diagnostic"}) and "sniper" in roles:
+            if roles.issubset({"sniper"}) and "sniper" in roles:
                 runtime_config.transfer_sniper_direct_target = True
     coordinator = Coordinator(
         policy=policy,
@@ -338,23 +292,17 @@ def _build_coordinator_and_workers(
         policy.attach_coordinator(coordinator)
     # COOCCURRENCE_BRIDGING overlay — feed --profiler-bridge-method into the
     # coordinator so it can stamp ``bridge_method`` into assignment metadata
-    # for any LightGCN-class step. Disabled when --strategic-disable-cooccurrence-bridging
-    # is set, regardless of the bridge-method seed.
+    # for any LightGCN-class step.
     coordinator.configure_cooccurrence_bridging(
         method=getattr(args, "profiler_bridge_method", "none"),
-        enabled=not bool(getattr(args, "strategic_disable_cooccurrence_bridging", False)),
+        enabled=True,
     )
     worker_policy_name = args.worker_policy
-    worker_llm_client = None
-    if worker_policy_name != "rule":
-        worker_model = args.worker_llm_model or args.llm_model
-        if worker_policy_name == "openai":
-            api_key = args.openai_api_key or os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                raise RuntimeError("OPENAI_API_KEY is required for OpenAI worker policy")
-            worker_llm_client = build_llm_client(provider="openai", model=worker_model, api_key=api_key)
-        else:
-            worker_llm_client = build_llm_client(provider="ollama", model=worker_model, host=args.ollama_host)
+    worker_model = args.worker_llm_model or args.llm_model
+    if worker_policy_name == "openai":
+        worker_llm_client = build_llm_client(provider="openai", model=worker_model, api_key=args.openai_api_key or os.getenv("OPENAI_API_KEY"))
+    else:
+        worker_llm_client = build_llm_client(provider="ollama", model=worker_model, host=args.ollama_host)
     _graph_sniper = bool(getattr(args, "graph_sniper", False))
     worker_policy_config = WorkerPolicyConfig(
         implicit_safe=bool(getattr(args, "implicit_safe_attack", False)),
@@ -378,11 +326,6 @@ def _build_coordinator_and_workers(
         total_steps=total_steps,
     )
     if bool(getattr(args, "unified_memory", False)):
-        if not isinstance(policy, LLMCoordinatorPolicy) or worker_llm_client is None:
-            raise RuntimeError(
-                "--unified-memory requires LLM coordinator and LLM workers "
-                "(set --coordinator-policy openai|ollama and --worker-policy openai|ollama)."
-            )
         shared = UnifiedMemory(maxlen=int(getattr(args, "unified_memory_size", 15)))
         policy.set_unified_memory(shared)
         for worker in workers.values():
@@ -647,6 +590,207 @@ def _attack_outcome_stats(history: list[dict], positive_threshold: float) -> dic
     }
 
 
+def _collect_token_usage(coordinator, workers: dict) -> dict:
+    """Collect cumulative token usage from the coordinator policy and all workers.
+
+    Returns:
+        Nested dict with per-component and aggregate token counts.
+    """
+    coord_totals = getattr(getattr(coordinator, "policy", None), "_token_totals", None) or {}
+    by_agent = {}
+    aggregate = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+        aggregate[key] += int(coord_totals.get(key, 0))
+
+    for aid, worker in workers.items():
+        w_totals = getattr(worker, "_token_totals", None) or {}
+        by_agent[aid] = {
+            "prompt_tokens": int(w_totals.get("prompt_tokens", 0)),
+            "completion_tokens": int(w_totals.get("completion_tokens", 0)),
+            "total_tokens": int(w_totals.get("total_tokens", 0)),
+        }
+        for key in ("prompt_tokens", "completion_tokens", "total_tokens"):
+            aggregate[key] += by_agent[aid][key]
+
+    return {
+        "coordinator": {
+            "prompt_tokens": int(coord_totals.get("prompt_tokens", 0)),
+            "completion_tokens": int(coord_totals.get("completion_tokens", 0)),
+            "total_tokens": int(coord_totals.get("total_tokens", 0)),
+        },
+        "by_agent": by_agent,
+        "aggregate": aggregate,
+    }
+
+
+def _print_token_usage(token_usage: dict) -> None:
+    """Print a human-readable token usage summary to stdout."""
+    agg = token_usage.get("aggregate", {})
+    coord = token_usage.get("coordinator", {})
+    print("\n--- Token Usage ---")
+    print(f"  Coordinator : prompt={coord.get('prompt_tokens', 0):,}  completion={coord.get('completion_tokens', 0):,}  total={coord.get('total_tokens', 0):,}")
+    for aid, usage in token_usage.get("by_agent", {}).items():
+        print(f"  {aid:<12}: prompt={usage.get('prompt_tokens', 0):,}  completion={usage.get('completion_tokens', 0):,}  total={usage.get('total_tokens', 0):,}")
+    print(f"  AGGREGATE   : prompt={agg.get('prompt_tokens', 0):,}  completion={agg.get('completion_tokens', 0):,}  total={agg.get('total_tokens', 0):,}")
+    print("-------------------\n")
+
+
+def _compute_activation_stats(output: dict) -> dict:
+    """Count role and strategy activations from a completed episode output dict.
+
+    Iterates over ``history`` (role counts per agent per step) and
+    ``coordinator_logs`` (strategy per step) to build activation tallies.
+
+    Returns:
+        Dict with ``role_counts``, ``role_counts_by_agent``, and
+        ``strategy_counts`` keys.
+    """
+    role_counts: dict[str, int] = {}
+    role_counts_by_agent: dict[str, dict[str, int]] = {}
+    strategy_counts: dict[str, int] = {}
+
+    for step_entry in output.get("history", []):
+        for report in step_entry.get("reports", []):
+            role = str(report.get("role", "unknown"))
+            aid = str(report.get("agent_id", "unknown"))
+            role_counts[role] = role_counts.get(role, 0) + 1
+            if aid not in role_counts_by_agent:
+                role_counts_by_agent[aid] = {}
+            role_counts_by_agent[aid][role] = role_counts_by_agent[aid].get(role, 0) + 1
+
+    for log in output.get("coordinator_logs", []):
+        trace = log.get("trace") or {}
+        runtime = log.get("runtime_trace") or {}
+        # Probe steps recorded directly on the runtime trace
+        if runtime.get("probe_phase"):
+            strategy = "S1_VICTIM_PROBE"
+        else:
+            strategy = str(trace.get("strategy") or "unknown")
+        strategy_counts[strategy] = strategy_counts.get(strategy, 0) + 1
+
+    return {
+        "role_counts": dict(sorted(role_counts.items(), key=lambda x: -x[1])),
+        "role_counts_by_agent": role_counts_by_agent,
+        "strategy_counts": dict(sorted(strategy_counts.items(), key=lambda x: -x[1])),
+    }
+
+
+def _print_activation_stats(stats: dict) -> None:
+    """Print role and strategy activation tallies to stdout."""
+    print("--- Role Activations ---")
+    for role, count in stats.get("role_counts", {}).items():
+        print(f"  {role:<18}: {count}")
+    print()
+    print("--- Role Activations by Agent ---")
+    for aid, counts in stats.get("role_counts_by_agent", {}).items():
+        parts = ", ".join(f"{r}={c}" for r, c in sorted(counts.items(), key=lambda x: -x[1]))
+        print(f"  {aid:<12}: {parts}")
+    print()
+    print("--- Strategy Activations ---")
+    for strategy, count in stats.get("strategy_counts", {}).items():
+        print(f"  {strategy:<26}: {count}")
+    print("------------------------\n")
+
+
+def _save_run_log(output: dict, stats: dict, log_path: "Path") -> None:
+    """Write a human-readable text log of the episode alongside the JSON output.
+
+    Args:
+        output: Full episode output dict (same as saved to JSON).
+        stats: Activation stats from ``_compute_activation_stats``.
+        log_path: Path of the ``.log`` file to write.
+    """
+    lines: list[str] = []
+    lines.append("=" * 60)
+    lines.append("AGAS Episode Run Log")
+    lines.append("=" * 60)
+    lines.append(f"Dataset         : {output.get('dataset')}")
+    lines.append(f"Target item     : {output.get('target_item_id')} ({output.get('target_keyword')})")
+    lines.append(f"Steps           : {output.get('executed_steps')} / {output.get('num_steps')}")
+    lines.append(f"Agents          : {output.get('num_agents')}")
+    lines.append(f"Coordinator     : {output.get('coordinator_policy')}")
+    lines.append(f"Worker policy   : {output.get('worker_policy')}")
+    lines.append(f"Initial rank    : {output.get('initial_rank')} / {output.get('initial_total_candidates')}")
+    lines.append(f"Final rank      : {output.get('final_rank')} / {output.get('final_total_candidates')}")
+    lines.append(f"Best rank       : {output.get('best_rank')} (step {output.get('best_rank_step')})")
+    lines.append(f"Goal achieved   : {output.get('goal_achieved')}  (goal <= {output.get('goal_rank')})")
+    lines.append(f"Stopped early   : {output.get('stopped_early')}  ({output.get('stop_reason')})")
+    lines.append("")
+
+    # Per-step timeline
+    lines.append("-" * 60)
+    lines.append("Step-by-step Timeline")
+    lines.append("-" * 60)
+    for step_entry in output.get("history", []):
+        s = step_entry["step"]
+        rank = step_entry.get("feedback", {}).get("target_rank", "?")
+        total = step_entry.get("feedback", {}).get("total_candidates", "?")
+        # strategy from coordinator_logs
+        coord_log = next(
+            (cl for cl in output.get("coordinator_logs", []) if cl.get("step") == s), {}
+        )
+        trace = coord_log.get("trace") or {}
+        runtime = coord_log.get("runtime_trace") or {}
+        strategy = "S1_VICTIM_PROBE" if runtime.get("probe_phase") else (trace.get("strategy") or "unknown")
+        lines.append(f"Step {s:2d}  rank={rank}/{total}  strategy={strategy}")
+        for report in step_entry.get("reports", []):
+            aid = report["agent_id"]
+            role = report["role"]
+            actions = report.get("actions", [])
+            tok = (report.get("trace") or {}).get("token_usage") or {}
+            tok_str = f"  tokens={tok.get('total_tokens', 0)}" if tok else ""
+            if actions:
+                act_str = ", ".join(f"{a['item_id']}→{a['rating']}" for a in actions)
+            else:
+                act_str = "no action"
+            lines.append(f"         {aid:<10} [{role:<14}]: {act_str}{tok_str}")
+    lines.append("")
+
+    # Token usage
+    lines.append("-" * 60)
+    lines.append("Token Usage")
+    lines.append("-" * 60)
+    tu = output.get("token_usage") or {}
+    coord_tok = tu.get("coordinator") or {}
+    lines.append(f"  Coordinator : prompt={coord_tok.get('prompt_tokens', 0):,}  "
+                 f"completion={coord_tok.get('completion_tokens', 0):,}  "
+                 f"total={coord_tok.get('total_tokens', 0):,}")
+    for aid, tok in (tu.get("by_agent") or {}).items():
+        lines.append(f"  {aid:<12}: prompt={tok.get('prompt_tokens', 0):,}  "
+                     f"completion={tok.get('completion_tokens', 0):,}  "
+                     f"total={tok.get('total_tokens', 0):,}")
+    agg = tu.get("aggregate") or {}
+    lines.append(f"  AGGREGATE   : prompt={agg.get('prompt_tokens', 0):,}  "
+                 f"completion={agg.get('completion_tokens', 0):,}  "
+                 f"total={agg.get('total_tokens', 0):,}")
+    lines.append("")
+
+    # Role activations
+    lines.append("-" * 60)
+    lines.append("Role Activations (total across all agents)")
+    lines.append("-" * 60)
+    for role, count in stats.get("role_counts", {}).items():
+        lines.append(f"  {role:<18}: {count}")
+    lines.append("")
+    lines.append("Role Activations by Agent")
+    for aid, counts in stats.get("role_counts_by_agent", {}).items():
+        parts = "  ".join(f"{r}={c}" for r, c in sorted(counts.items(), key=lambda x: -x[1]))
+        lines.append(f"  {aid:<12}: {parts}")
+    lines.append("")
+
+    # Strategy activations
+    lines.append("-" * 60)
+    lines.append("Strategy Activations")
+    lines.append("-" * 60)
+    for strategy, count in stats.get("strategy_counts", {}).items():
+        lines.append(f"  {strategy:<26}: {count}")
+    lines.append("")
+    lines.append("=" * 60)
+
+    log_path.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _summarize_goal_status(initial_rank: int, history: list[dict], goal_rank: int) -> dict:
     """Summarize best observed rank and whether the episode reached the target goal.
 
@@ -768,17 +912,12 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
         dataset=args.dataset,
         max_interactions=_parse_optional_int(args.max_interactions),
         n_factors=args.n_factors,
+        surrogate_model=str(getattr(args, "surrogate_model", "mf")),
     )
     target_item_id = str(args.target_item_id)
 
     agent_ids = default_agent_ids(args.num_agents)
     prompt_store = PromptStore(Path(args.prompt_root))
-    coordinator, workers = _build_coordinator_and_workers(
-        args=args,
-        agent_ids=agent_ids,
-        prompt_store=prompt_store,
-        total_steps=args.num_steps,
-    )
 
     env = AGASEnvironment(
         recommender=model,
@@ -801,6 +940,37 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
         ),
         seed=args.seed,
     )
+
+    # Compute bridge items BEFORE building the coordinator so they can be injected
+    # into the coordinator's context and skip warm-up profiler rounds.
+    bridge_method = str(getattr(args, "profiler_bridge_method", "none")).strip().lower()
+    precomputed_bridge: list[str] = []
+    if bridge_method not in ("", "none"):
+        n_bridge = max(50, int(getattr(args, "profiler_actions", 3)) * 8)
+        auto_threshold = 100
+        precomputed_bridge = env.compute_bridge_items(n=n_bridge, method=bridge_method, auto_threshold=auto_threshold)
+        if precomputed_bridge:
+            print(f"Bridge-item pre-selection ({bridge_method}): {len(precomputed_bridge)} items found before episode.")
+        else:
+            print(f"Bridge-item pre-selection ({bridge_method}): no items found — falling back to cluster/benchmark.")
+
+    # Override probe_steps/profiler_interval when --skip-profiler-warmup is set
+    # or when bridge items are ready (no need to spend rounds finding them).
+    if bool(getattr(args, "skip_profiler_warmup", False)) or (precomputed_bridge and bool(getattr(args, "victim_model_hint", "auto") == "lightgcn")):
+        args = argparse.Namespace(**vars(args))  # make a copy so we don't mutate the original
+        args.probe_steps = 0
+        args.profiler_interval = 999  # effectively disable forced-profiler injection
+        if bool(getattr(args, "skip_profiler_warmup", False)):
+            print("Skipping profiler warm-up: bridge items are pre-selected, snipers attack from step 0.")
+
+    coordinator, workers = _build_coordinator_and_workers(
+        args=args,
+        agent_ids=agent_ids,
+        prompt_store=prompt_store,
+        total_steps=args.num_steps,
+        precomputed_bridge_items=precomputed_bridge,
+    )
+
     initial_rank = int(env.current_rank)
     initial_total_candidates = int(env.total_candidates)
     print(
@@ -826,41 +996,51 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
     result = runner.run()
     goal_summary = _summarize_goal_status(initial_rank=initial_rank, history=result.history, goal_rank=args.goal_rank)
 
+    token_usage = _collect_token_usage(coordinator, workers)
+    _print_token_usage(token_usage)
+
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    episode_output = {
+        "dataset": args.dataset,
+        "target_item_id": target_item_id,
+        "target_keyword": args.target_keyword,
+        "num_steps": args.num_steps,
+        "num_agents": args.num_agents,
+        "coordinator_policy": args.coordinator_policy,
+        "worker_policy": args.worker_policy,
+        "prompt_root": str(Path(args.prompt_root)),
+        "initial_rank": initial_rank,
+        "initial_total_candidates": initial_total_candidates,
+        "stop_on_goal": bool(args.stop_on_goal),
+        "stopped_early": bool(result.stopped_early),
+        "stop_reason": result.stop_reason,
+        "executed_steps": result.executed_steps,
+        "goal_rank": goal_summary["goal_rank"],
+        "best_rank": goal_summary["best_rank"],
+        "best_rank_step": goal_summary["best_rank_step"],
+        "goal_achieved": goal_summary["goal_achieved"],
+        "goal_first_reached_step": goal_summary["goal_first_reached_step"],
+        "final_rank": result.final_rank,
+        "final_total_candidates": result.final_total_candidates,
+        "final_worker_states": result.final_worker_states,
+        "agent_logs": result.agent_logs,
+        "coordinator_logs": result.coordinator_logs,
+        "history": result.history,
+        "embedding_cluster_metrics": result.embedding_cluster_metrics,
+        "token_usage": token_usage,
+    }
+    activation_stats = _compute_activation_stats(episode_output)
+    episode_output["activation_stats"] = activation_stats
+    _print_activation_stats(activation_stats)
+
     with out_path.open("w", encoding="utf-8") as f:
-        json.dump(
-            {
-                "dataset": args.dataset,
-                "target_item_id": target_item_id,
-                "target_keyword": args.target_keyword,
-                "num_steps": args.num_steps,
-                "num_agents": args.num_agents,
-                "coordinator_policy": args.coordinator_policy,
-                "worker_policy": args.worker_policy,
-                "prompt_root": str(Path(args.prompt_root)),
-                "initial_rank": initial_rank,
-                "initial_total_candidates": initial_total_candidates,
-                "stop_on_goal": bool(args.stop_on_goal),
-                "stopped_early": bool(result.stopped_early),
-                "stop_reason": result.stop_reason,
-                "executed_steps": result.executed_steps,
-                "goal_rank": goal_summary["goal_rank"],
-                "best_rank": goal_summary["best_rank"],
-                "best_rank_step": goal_summary["best_rank_step"],
-                "goal_achieved": goal_summary["goal_achieved"],
-                "goal_first_reached_step": goal_summary["goal_first_reached_step"],
-                "final_rank": result.final_rank,
-                "final_total_candidates": result.final_total_candidates,
-                "final_worker_states": result.final_worker_states,
-                "agent_logs": result.agent_logs,
-                "coordinator_logs": result.coordinator_logs,
-                "history": result.history,
-                "embedding_cluster_metrics": result.embedding_cluster_metrics,
-            },
-            f,
-            indent=2,
-        )
+        json.dump(episode_output, f, indent=2)
+
+    log_path = out_path.with_suffix(".log")
+    _save_run_log(episode_output, activation_stats, log_path)
+    print(f"Run log saved to {log_path}")
 
     print(f"Episode finished. Target rank: {result.final_rank}/{result.final_total_candidates}")
     if result.stopped_early:
@@ -989,6 +1169,8 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
     split_by_target = bool(getattr(args, "transfer_split_by_target_model", False))
 
     surrogate_result = None
+    coordinator = None
+    workers: dict = {}
     attack_rows = pd.DataFrame(columns=["user_id", "item_id", "rating"])
     attack_stats = None
     cloned_rows = pd.DataFrame(columns=["user_id", "item_id", "rating"])
@@ -1134,7 +1316,6 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 episode_model = str(getattr(args, "episode_model", "surrogate")).strip().lower()
                 victim_hint = str(getattr(args, "victim_model_hint", "auto")).strip().lower()
                 probe_steps = int(getattr(args, "probe_steps", 2))
-                rule_max_snipers = int(getattr(args, "rule_max_snipers", 1))
                 candidate_set = str(getattr(args, "transfer_candidate_set", "cluster"))
 
                 if name == "lightgcn":
@@ -1145,7 +1326,6 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     episode_model = "lightgcn"
                     victim_hint = "mf"
                     probe_steps = 0
-                    rule_max_snipers = max(rule_max_snipers, 3)
                     candidate_set = "all_items"
 
                 per_target_settings[name] = {
@@ -1154,7 +1334,6 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     "probe_steps": probe_steps,
                     "use_segment_users_as_agents": use_segment_users,
                     "clone_segment_users_to_agents": clone_profiles,
-                    "rule_max_snipers": rule_max_snipers,
                     "transfer_candidate_set": candidate_set,
                 }
 
@@ -1189,7 +1368,6 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 args_local.victim_model_hint = victim_hint
                 args_local.probe_steps = probe_steps
                 args_local.use_segment_users_as_agents = use_segment_users
-                args_local.rule_max_snipers = rule_max_snipers
                 args_local.transfer_candidate_set = candidate_set
 
                 coordinator, workers = _build_coordinator_and_workers(
@@ -1363,7 +1541,6 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "victim_model_hint": str(getattr(args, "victim_model_hint", "auto")),
         "probe_steps": int(getattr(args, "probe_steps", 2)),
         "lightgcn_budget": str(getattr(args, "lightgcn_budget", "small")),
-        "rule_max_snipers": int(getattr(args, "rule_max_snipers", 1)),
         "target_item_id": target_item_id,
         "target_keyword": args.target_keyword,
         "num_steps": args.num_steps,
@@ -1403,7 +1580,11 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "profile_validator_scores": (
             surrogate_result.profile_validator_scores if surrogate_result is not None else {}
         ),
+        "token_usage": _collect_token_usage(coordinator, workers),
     }
+
+    if coordinator is not None:
+        _print_token_usage(output["token_usage"])
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1463,6 +1644,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument("--dataset", default="ml-latest-small")
     p_run.add_argument("--max-interactions", default="500000")
     p_run.add_argument("--n-factors", type=int, default=32)
+    p_run.add_argument(
+        "--surrogate-model",
+        default="mf",
+        choices=["mf", "lightgcn"],
+        help="Surrogate recommender used for rank simulation. "
+             "'lightgcn' fits a real LightGCN so graph attacks show rank movement.",
+    )
     p_run.add_argument("--target-item-id", default="101")
     p_run.add_argument("--target-keyword", default="horror")
     p_run.add_argument("--num-agents", type=int, default=4)
@@ -1489,8 +1677,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Enable ProfileValidator guardrail. Computes per-agent suspicion score "
             "(extremity + target-hit + collusion). Scores are injected into the "
-            "coordinator observation under signals_by_agent[aid]['validator']; "
-            "rule-based coordinator forces flagged agents to INACTIVE."
+            "coordinator observation under signals_by_agent[aid]['validator']."
         ),
     )
     p_run.add_argument(
@@ -1500,35 +1687,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Aggregate validator score above which agents are forced to cool-down.",
     )
 
-    p_run.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama", "strategic"], default="openai")
-    p_run.add_argument("--strategic-stealth-aggregate", type=float, default=0.70)
-    p_run.add_argument("--strategic-stealth-streak", type=int, default=2)
-    p_run.add_argument("--strategic-stealth-cooldown", type=int, default=3)
-    p_run.add_argument("--strategic-disable-stealth", action="store_true")
-    p_run.add_argument("--strategic-reprobe-window", type=int, default=3)
-    p_run.add_argument("--strategic-reprobe-min-step", type=int, default=4)
-    p_run.add_argument("--strategic-disable-reprobe", action="store_true")
-    p_run.add_argument("--strategic-budget-drop", type=float, default=0.7)
-    p_run.add_argument("--strategic-budget-hold", type=int, default=2)
-    p_run.add_argument("--strategic-disable-budget", action="store_true")
-    p_run.add_argument("--strategic-diversity-lookback", type=int, default=3)
-    p_run.add_argument("--strategic-diversity-max-repeat", type=int, default=2)
-    p_run.add_argument("--strategic-disable-diversity", action="store_true")
+    p_run.add_argument("--coordinator-policy", choices=["openai", "ollama"], default="openai")
+
+
+
+
+
+
+
+
+
+
+
+
+
     # Newly-named phase + overlay ablation toggles (default off = strategy enabled).
-    p_run.add_argument("--strategic-disable-probe-classify", action="store_true")
-    p_run.add_argument("--strategic-disable-trust-bank-opening", action="store_true")
-    p_run.add_argument("--strategic-disable-synchronized-payload", action="store_true")
-    p_run.add_argument("--strategic-disable-alert-cooldown", action="store_true")
-    p_run.add_argument("--strategic-disable-trust-rank-exploit", action="store_true")
-    p_run.add_argument("--strategic-disable-validator-guardrail", action="store_true")
-    p_run.add_argument("--strategic-disable-suspicion-lockout", action="store_true")
-    p_run.add_argument("--strategic-disable-cooccurrence-bridging", action="store_true")
+
+
+
+
+
+
+
+
     p_run.add_argument("--llm-model", default="gpt-5-mini")
     p_run.add_argument("--llm-temperature", type=float, default=0.3)
     p_run.add_argument("--llm-temperature-end", type=float, default=None)
     p_run.add_argument("--openai-api-key", default=None)
     p_run.add_argument("--ollama-host", default="http://localhost:11434")
-    p_run.add_argument("--worker-policy", choices=["rule", "openai", "ollama"], default="rule")
+    p_run.add_argument("--worker-policy", choices=["openai", "ollama"], default="openai")
     p_run.add_argument("--worker-llm-model", default=None)
     p_run.add_argument("--worker-llm-temperature", type=float, default=0.3)
     p_run.add_argument("--worker-llm-temperature-end", type=float, default=None)
@@ -1573,15 +1760,45 @@ def build_parser() -> argparse.ArgumentParser:
         default="inactive",
         help="Role to assign when a sniper is locked after suppression.",
     )
-    p_run.add_argument(
-        "--rule-max-snipers",
-        type=int,
-        default=1,
-        help="For rule-based coordinator: maximum number of snipers to assign per step when target rank is still > 5.",
-    )
     p_run.add_argument("--group-overlap-threshold", type=float, default=0.6)
     p_run.add_argument("--group-target-required", action=argparse.BooleanOptionalAction, default=True)
     p_run.add_argument("--group-weight", type=float, default=0.2)
+
+    # Victim-model class & probe
+    p_run.add_argument(
+        "--victim-model-hint",
+        default="auto",
+        choices=["auto", "mf", "lightgcn", "sequential"],
+        help="Skip probe phase and force victim class. 'auto' runs the probe.",
+    )
+    p_run.add_argument("--probe-steps", type=int, default=2)
+    p_run.add_argument("--probe-use-graph", action="store_true", default=False,
+                       help="Add a graph-diffusion probe step after the direct probe.")
+    p_run.add_argument("--probe-repeats", type=int, default=1)
+
+    # Graph / LightGCN attack flags
+    p_run.add_argument("--graph-sniper", action="store_true", default=False,
+                       help="Snipers attack via cluster-neighbour items instead of target directly.")
+    p_run.add_argument("--graph-sniper-neighbor-actions", type=int, default=3)
+    p_run.add_argument(
+        "--profiler-bridge-method",
+        default="none",
+        choices=["none", "cooccurrence", "gradient", "auto"],
+        help="How to compute bridge items for the profiler pool. "
+             "'cooccurrence' finds items sharing users with the target segment. "
+             "'gradient' requires a fitted LightGCN surrogate.",
+    )
+    p_run.add_argument("--profiler-use-cluster", action="store_true", default=False,
+                       help="Profiler always draws from target cluster items (not benchmark).")
+    p_run.add_argument("--skip-profiler-warmup", action="store_true", default=False,
+                       help="Skip profiler warm-up rounds entirely. Use when bridge items are "
+                            "pre-selected and agents should attack with snipers from step 0.")
+    p_run.add_argument(
+        "--lightgcn-budget",
+        default="small",
+        choices=["small", "large"],
+        help="Fake-user budget hint for LightGCN strategy prompts.",
+    )
 
     p_run.add_argument("--output", default="outputs/episode_result.json")
     p_run.set_defaults(func=cmd_run_episode)
@@ -1617,8 +1834,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Enable ProfileValidator guardrail. Computes per-agent suspicion score "
             "(extremity + target-hit + collusion). Scores are injected into the "
-            "coordinator observation under signals_by_agent[aid]['validator']; "
-            "rule-based coordinator forces flagged agents to INACTIVE."
+            "coordinator observation under signals_by_agent[aid]['validator']."
         ),
     )
     p_transfer.add_argument(
@@ -1628,34 +1844,34 @@ def build_parser() -> argparse.ArgumentParser:
         help="Aggregate validator score above which agents are forced to cool-down.",
     )
 
-    p_transfer.add_argument("--coordinator-policy", choices=["rule", "openai", "ollama", "strategic"], default="openai")
-    p_transfer.add_argument("--strategic-stealth-aggregate", type=float, default=0.55)
-    p_transfer.add_argument("--strategic-stealth-streak", type=int, default=2)
-    p_transfer.add_argument("--strategic-disable-stealth", action="store_true")
-    p_transfer.add_argument("--strategic-reprobe-window", type=int, default=3)
-    p_transfer.add_argument("--strategic-reprobe-min-step", type=int, default=4)
-    p_transfer.add_argument("--strategic-disable-reprobe", action="store_true")
-    p_transfer.add_argument("--strategic-budget-drop", type=float, default=0.7)
-    p_transfer.add_argument("--strategic-budget-hold", type=int, default=2)
-    p_transfer.add_argument("--strategic-disable-budget", action="store_true")
-    p_transfer.add_argument("--strategic-diversity-lookback", type=int, default=3)
-    p_transfer.add_argument("--strategic-diversity-max-repeat", type=int, default=2)
-    p_transfer.add_argument("--strategic-disable-diversity", action="store_true")
+    p_transfer.add_argument("--coordinator-policy", choices=["openai", "ollama"], default="openai")
+
+
+
+
+
+
+
+
+
+
+
+
     # Newly-named phase + overlay ablation toggles (default off = strategy enabled).
-    p_transfer.add_argument("--strategic-disable-probe-classify", action="store_true")
-    p_transfer.add_argument("--strategic-disable-trust-bank-opening", action="store_true")
-    p_transfer.add_argument("--strategic-disable-synchronized-payload", action="store_true")
-    p_transfer.add_argument("--strategic-disable-alert-cooldown", action="store_true")
-    p_transfer.add_argument("--strategic-disable-trust-rank-exploit", action="store_true")
-    p_transfer.add_argument("--strategic-disable-validator-guardrail", action="store_true")
-    p_transfer.add_argument("--strategic-disable-suspicion-lockout", action="store_true")
-    p_transfer.add_argument("--strategic-disable-cooccurrence-bridging", action="store_true")
+
+
+
+
+
+
+
+
     p_transfer.add_argument("--llm-model", default="gpt-5-mini")
     p_transfer.add_argument("--llm-temperature", type=float, default=0.3)
     p_transfer.add_argument("--llm-temperature-end", type=float, default=None)
     p_transfer.add_argument("--openai-api-key", default=None)
     p_transfer.add_argument("--ollama-host", default="http://localhost:11434")
-    p_transfer.add_argument("--worker-policy", choices=["rule", "openai", "ollama"], default="rule")
+    p_transfer.add_argument("--worker-policy", choices=["openai", "ollama"], default="openai")
     p_transfer.add_argument("--worker-llm-model", default=None)
     p_transfer.add_argument("--worker-llm-temperature", type=float, default=0.3)
     p_transfer.add_argument("--worker-llm-temperature-end", type=float, default=None)
@@ -1959,12 +2175,6 @@ def build_parser() -> argparse.ArgumentParser:
             "--target-positive-threshold are treated as observed (positive) interactions. "
             "Disable (set --no-target-implicit-only) to train on all explicit ratings."
         ),
-    )
-    p_transfer.add_argument(
-        "--rule-max-snipers",
-        type=int,
-        default=1,
-        help="For rule-based coordinator: maximum number of snipers to assign per step when target rank is still > 5.",
     )
     p_transfer.add_argument(
         "--sniper-start-step",

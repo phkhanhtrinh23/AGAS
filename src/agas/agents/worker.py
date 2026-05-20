@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 from agas.agents.messages import AgentRole, RatingAction, RoleAssignment, WorkerActionReport
 from agas.llm.prompt_store import PromptStore
-from agas.llm.providers import LLMClient, LLMRequest
+from agas.llm.providers import LLMClient, LLMRequest, LLMResponse
 
 
 @dataclass
@@ -90,7 +90,7 @@ class WorkerAgent:
         seed: int = 42,
         llm_client: LLMClient | None = None,
         prompt_store: PromptStore | None = None,
-        policy_name: str = "rule",
+        policy_name: str = "openai",
         temperature: float = 0.2,
         temperature_end: float | None = None,
         total_steps: int | None = None,
@@ -119,6 +119,11 @@ class WorkerAgent:
         self._total_steps = total_steps
         self._trajectory_summary: List[Dict[str, Any]] = []
         self._unified_memory = None  # type: ignore[assignment]
+        self._token_totals: Dict[str, int] = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
 
     def set_unified_memory(self, memory) -> None:
         """Attach a shared ``UnifiedMemory`` instance replacing per-agent memory.
@@ -178,22 +183,31 @@ class WorkerAgent:
                 agent_id=self.state.agent_id,
                 role=assignment.role,
                 actions=[],
-                policy=self._policy_name if self._llm_client is not None else "rule",
+                policy=self._policy_name,
                 trace=self.last_trace,
             )
 
-        if self._llm_client is not None:
-            actions = self._act_with_llm(assignment, step, ctx)
-        elif assignment.role == AgentRole.PROFILER:
-            actions = self._act_profiler(ctx)
-        elif assignment.role == AgentRole.CAMOUFLAGEUR:
-            actions = self._act_camouflaguer(ctx)
-        elif assignment.role == AgentRole.SNIPER:
-            actions = self._act_sniper(ctx, assignment)
-        elif assignment.role == AgentRole.DIAGNOSTIC:
+        # Probe assignments always bypass the LLM and run deterministic diagnostic logic.
+        if (assignment.metadata or {}).get("diagnostic_type"):
             actions = self._act_diagnostic(ctx, assignment)
-        else:
-            actions = []
+            self.last_trace = {
+                "prompt_key": "probe_deterministic",
+                "raw_response": "",
+                "fallback_used": False,
+                "token_usage": None,
+            }
+            self.state.actions_taken += len(actions)
+            return WorkerActionReport(
+                step=step,
+                agent_id=self.state.agent_id,
+                role=assignment.role,
+                actions=actions,
+                notes=assignment.rationale,
+                policy=self._policy_name,
+                trace=self.last_trace,
+            )
+
+        actions = self._act_with_llm(assignment, step, ctx)
 
         self.state.actions_taken += len(actions)
         return WorkerActionReport(
@@ -202,7 +216,7 @@ class WorkerAgent:
             role=assignment.role,
             actions=actions,
             notes=assignment.rationale,
-            policy=self._policy_name if self._llm_client is not None else "rule",
+            policy=self._policy_name,
             trace=self.last_trace,
         )
 
@@ -252,84 +266,6 @@ class WorkerAgent:
         # Keep this < 5.0 to avoid the environment's spike detector (which triggers on >= 5.0).
         # Default threshold is 4.0, so 4.0 becomes a safe "positive" interaction.
         return float(min(4.0, max(1.0, threshold)))
-
-    def _act_profiler(self, ctx: WorkerContext) -> List[RatingAction]:
-        """Emit benign ratings on popular benchmark items to probe system acceptance.
-
-        Args:
-            ctx: Environment-provided item pools used by role policies.
-
-        Returns:
-            A list of profiler rating actions.
-        """
-
-        sampled = self._sample_items(ctx.benchmark_items, self.config.profiler_actions)
-        out = []
-        if self.config.implicit_safe:
-            out.append(
-                RatingAction(
-                    agent_id=self.state.agent_id,
-                    item_id=str(ctx.target_item_id),
-                    rating=self._implicit_safe_target_rating(),
-                    reason="Profiler anchors the target as a known positive while probing acceptance.",
-                )
-            )
-            sampled = [i for i in sampled if str(i) != str(ctx.target_item_id)]
-            sampled = sampled[: max(0, int(self.config.profiler_actions) - 1)]
-        for item_id in sampled:
-            if self.config.implicit_safe:
-                rating = self._safe_rating_below_threshold()
-            else:
-                rating = 5.0 if self._rand.random() < 0.7 else 4.0
-            out.append(
-                RatingAction(
-                    agent_id=self.state.agent_id,
-                    item_id=item_id,
-                    rating=rating,
-                    reason="Profiler probes whether ratings are accepted by the RS.",
-                )
-            )
-        return out
-
-    def _act_camouflaguer(self, ctx: WorkerContext) -> List[RatingAction]:
-        """Emit in-cluster or noise ratings to gain trust and reduce anomaly risk.
-
-        Args:
-            ctx: Environment-provided item pools used by role policies.
-
-        Returns:
-            A list of camouflage rating actions.
-        """
-
-        # Always use noise items (unrelated genres) to avoid boosting competitors.
-        focus_items = list(ctx.noise_items) if ctx.noise_items else list(ctx.benchmark_items)
-        sampled = self._sample_items(focus_items, self.config.camouflaguer_actions)
-        out = []
-        if self.config.implicit_safe:
-            out.append(
-                RatingAction(
-                    agent_id=self.state.agent_id,
-                    item_id=str(ctx.target_item_id),
-                    rating=self._implicit_safe_target_rating(),
-                    reason="Camouflaguer softly reinforces the target as a positive without spiking.",
-                )
-            )
-            sampled = [i for i in sampled if str(i) != str(ctx.target_item_id)]
-            sampled = sampled[: max(0, int(self.config.camouflaguer_actions) - 1)]
-        for item_id in sampled:
-            if self.config.implicit_safe:
-                rating = self._safe_rating_below_threshold()
-            else:
-                rating = self._rand.choice([3.0, 4.0, 5.0])
-            out.append(
-                RatingAction(
-                    agent_id=self.state.agent_id,
-                    item_id=item_id,
-                    rating=rating,
-                    reason="Camouflaguer blends into trusted target-domain cluster.",
-                )
-            )
-        return out
 
     def _act_diagnostic(self, ctx: WorkerContext, assignment: RoleAssignment) -> List[RatingAction]:
         """Run a single targeted probe action for victim-model classification.
@@ -407,187 +343,6 @@ class WorkerAgent:
                 ),
             )
         ]
-
-    def _act_sequential_sniper(self, ctx: WorkerContext) -> List[RatingAction]:
-        """Sequential-model sniper: build genre history first, rate target last.
-
-        In recency-aware models (SASRec, GRU4Rec, BERT4Rec) the model predicts the
-        *next* item from recent history.  The most recently rated item carries the
-        highest attention weight.  Rating the target last places it in the
-        highest-weight recency slot.
-
-        Args:
-            ctx: Environment-provided item pools used by role policies.
-
-        Returns:
-            Fillers at 4.0–5.0 followed by target at 5.0 (target is always last).
-        """
-
-        filler_pool = [i for i in ctx.target_cluster_items if str(i) != str(ctx.target_item_id)]
-        out: List[RatingAction] = []
-
-        for item_id in self._sample_items(filler_pool, self.config.sequential_filler_actions):
-            out.append(
-                RatingAction(
-                    agent_id=self.state.agent_id,
-                    item_id=item_id,
-                    rating=self._rand.choice([4.0, 4.5, 5.0]),
-                    reason=(
-                        "Sequential sniper: genre-consistent filler builds interaction history "
-                        "before target rating."
-                    ),
-                )
-            )
-
-        out.append(
-            RatingAction(
-                agent_id=self.state.agent_id,
-                item_id=ctx.target_item_id,
-                rating=5.0,
-                reason=(
-                    "Sequential sniper: target rated last — recency-aware model treats it as "
-                    "the highest-weight recent interaction (next-item prediction bias)."
-                ),
-            )
-        )
-        return out
-
-    def _act_sniper(self, ctx: WorkerContext, assignment: RoleAssignment | None = None) -> List[RatingAction]:
-        """Deliver the sniper payload, dispatching to the correct variant.
-
-        Variant priority:
-        1. ``self.config.graph_sniper`` explicit flag → graph-sniper (online LightGCN only).
-        2. ``assignment.metadata["victim_model_class"] == sequential_style`` → sequential sniper.
-        3. ``self.config.sequential_sniper`` legacy flag → sequential sniper.
-        4. Everything else (including lightgcn_style) → MF-style direct target rating.
-
-        Note: LightGCN-style classification does NOT automatically trigger graph-sniper.
-        For offline transfer attacks the victim model is retrained from scratch, so a
-        direct 5.0 target rating is the most effective payload regardless of architecture.
-        Graph-sniper must be explicitly enabled via ``--graph-sniper`` and is only
-        appropriate for pure online-injection attacks against a live LightGCN model.
-
-        Args:
-            ctx: Environment-provided item pools used by role policies.
-            assignment: Coordinator-issued assignment; carries victim model metadata.
-
-        Returns:
-            Rating actions for the chosen sniper variant.
-        """
-
-        victim_class = str(
-            ((assignment.metadata if assignment else None) or {}).get("victim_model_class", "")
-        ).lower()
-
-        # Graph-sniper only when explicitly requested via config flag.
-        if self.config.graph_sniper:
-            return self._act_graph_sniper(ctx)
-
-        if victim_class == "sequential_style" or self.config.sequential_sniper:
-            return self._act_sequential_sniper(ctx)
-
-        # MF-style (or unknown): direct target rating.
-        out = [
-            RatingAction(
-                agent_id=self.state.agent_id,
-                item_id=ctx.target_item_id,
-                rating=5.0,
-                reason="Sniper payload maximally promotes the target item.",
-            )
-        ]
-        competitor_actions = int(self.config.sniper_competitor_actions)
-        if self.config.implicit_safe:
-            competitor_actions = 0
-        competitor_items = self._sample_items(ctx.competitor_items, competitor_actions)
-        for item_id in competitor_items:
-            out.append(
-                RatingAction(
-                    agent_id=self.state.agent_id,
-                    item_id=item_id,
-                    rating=1.0,
-                    reason="Sniper payload strongly suppresses close competitors.",
-                )
-            )
-        return out
-
-    def _act_graph_sniper(self, ctx: WorkerContext) -> List[RatingAction]:
-        """Graph-aware sniper payload for degree-normalised models (e.g. LightGCN).
-
-        Standard snipers rate the target item at 5.0, but in LightGCN every new
-        edge added to the target increases its degree and dilutes the weight of ALL
-        its existing edges via D^{-1/2} A D^{-1/2} normalisation. This causes the
-        attack to hurt the target rather than help it.
-
-        This variant instead:
-        1. Rates cluster-neighbour items (same genre, NOT the target) at 5.0 so that
-           graph diffusion propagates the signal to the target without touching its
-           degree.
-        2. Rates competitors at 5.0 (not 1.0) to inflate their degrees, weakening
-           their existing edges and pushing them lower in the ranking relative to the
-           target.
-
-        Args:
-            ctx: Environment-provided item pools used by role policies.
-
-        Returns:
-            List of rating actions implementing the graph-aware sniper strategy.
-        """
-
-        out: List[RatingAction] = []
-
-        # Step 1: rate cluster neighbours at 5.0 (exclude the target itself)
-        neighbor_pool = [
-            i for i in ctx.target_cluster_items if str(i) != str(ctx.target_item_id)
-        ]
-        n_neighbors = int(self.config.graph_sniper_neighbor_actions)
-        for item_id in self._sample_items(neighbor_pool, n_neighbors):
-            out.append(
-                RatingAction(
-                    agent_id=self.state.agent_id,
-                    item_id=item_id,
-                    rating=5.0,
-                    reason=(
-                        "Graph-sniper: rating cluster neighbour at 5.0 so graph "
-                        "diffusion lifts the target without inflating its degree."
-                    ),
-                )
-            )
-
-        # Step 2: rate competitors at 5.0 to inflate their degrees (degree
-        # normalisation will then reduce the weight of their existing edges,
-        # pushing them lower in the ranking relative to the target).
-        competitor_actions = int(self.config.sniper_competitor_actions)
-        for item_id in self._sample_items(ctx.competitor_items, competitor_actions):
-            out.append(
-                RatingAction(
-                    agent_id=self.state.agent_id,
-                    item_id=item_id,
-                    rating=5.0,
-                    reason=(
-                        "Graph-sniper: rating competitor at 5.0 to inflate its degree "
-                        "and reduce the weight of its existing edges via normalisation."
-                    ),
-                )
-            )
-
-        # For offline transfer attacks the victim model is retrained from scratch, so
-        # degree normalisation adapts to the new edges.  Adding the target at 5.0 last
-        # ensures the transfer training set always contains at least one target positive.
-        # Disable via graph_sniper_include_target=False for pure online-injection attacks.
-        if self.config.graph_sniper_include_target:
-            out.append(
-                RatingAction(
-                    agent_id=self.state.agent_id,
-                    item_id=ctx.target_item_id,
-                    rating=5.0,
-                    reason=(
-                        "Graph-sniper: direct target 5.0 appended last to guarantee a "
-                        "positive training edge for offline transfer retraining."
-                    ),
-                )
-            )
-
-        return out
 
     def _default_prompt_text(self, role: AgentRole, assignment: RoleAssignment | None = None) -> tuple[str, str]:
         """Return fallback prompt templates for a worker role.
@@ -853,6 +608,23 @@ class WorkerAgent:
             "use strong negative ratings sparingly."
         )
 
+        # Probe steps use PROFILER role with diagnostic_type in metadata.
+        is_probe = bool(((assignment.metadata if assignment else None) or {}).get("diagnostic_type"))
+        if is_probe:
+            probe_system = (
+                "You are the Profiler agent running a victim-model probe in an AGAS simulation. "
+                "Your sole purpose is to execute the single probe action described in the context "
+                "to help classify the victim recommender architecture. Follow the diagnostic_type "
+                "instruction precisely. Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
+            )
+            probe_user = (
+                "Run the probe described in the context.\n"
+                "Context:\n{{context_json}}\n"
+                "Use the allowed candidate items only."
+            )
+            return probe_system, probe_user
+
         system_by_role = {
             AgentRole.PROFILER: _profiler_system.get(effective_class, _default_profiler_system),
             AgentRole.CAMOUFLAGEUR: _camouflageur_system.get(effective_class, _default_camouflageur_system),
@@ -861,23 +633,12 @@ class WorkerAgent:
                 "You are the Inactive agent in an AGAS simulation. "
                 'Return strictly valid JSON with an empty action list: {"actions":[]}.'
             ),
-            AgentRole.DIAGNOSTIC: (
-                "You are the Diagnostic agent in an AGAS simulation. Your sole purpose is to run a "
-                "single probe action to help classify the victim recommender architecture. Follow the "
-                "diagnostic_type instruction precisely. Return strictly valid JSON: "
-                '{"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
-            ),
         }
         user_by_role = {
             AgentRole.PROFILER: _profiler_user.get(effective_class, _default_profiler_user),
             AgentRole.CAMOUFLAGEUR: _camouflageur_user.get(effective_class, _default_camouflageur_user),
             AgentRole.SNIPER: _sniper_user.get(effective_class, _default_sniper_user),
             AgentRole.INACTIVE: "No action is required.\nContext:\n{{context_json}}",
-            AgentRole.DIAGNOSTIC: (
-                "Run the diagnostic probe described in the context.\n"
-                "Context:\n{{context_json}}\n"
-                "Use the allowed candidate items only."
-            ),
         }
         sys_prompt = system_by_role.get(role, _default_sniper_system)
         usr_prompt = user_by_role.get(role, "Context:\n{{context_json}}")
@@ -910,6 +671,11 @@ class WorkerAgent:
         budget = str(getattr(self.config, "lightgcn_budget", "small")).lower()
         effective_class = f"lightgcn_{budget}" if victim_class == "lightgcn_style" else victim_class
 
+        # Probe assignments: PROFILER with diagnostic_type metadata gets target + cluster pool.
+        if role == AgentRole.PROFILER and (assignment and (assignment.metadata or {}).get("diagnostic_type")):
+            focus = [str(ctx.target_item_id)] + list(ctx.target_cluster_items[:20])
+            return list(dict.fromkeys(focus)), 1 + self.config.sequential_filler_actions
+
         if role == AgentRole.PROFILER:
             if ctx.bridge_items:
                 # Gradient-selected bridge items take priority when available.
@@ -934,12 +700,19 @@ class WorkerAgent:
                 focus = [str(ctx.target_item_id)] + focus
             return list(dict.fromkeys(focus)), self.config.camouflaguer_actions
         if role == AgentRole.SNIPER:
+            if self.config.graph_sniper:
+                # LightGCN mode: rate cluster-neighbour/bridge items + competitors at 5.0;
+                # never include the target (direct edges inflate its degree and dilute edges).
+                neighbor_pool = list(ctx.bridge_items) or [
+                    i for i in ctx.target_cluster_items if str(i) != str(ctx.target_item_id)
+                ]
+                neighbor_pool = [i for i in neighbor_pool if str(i) != str(ctx.target_item_id)]
+                competitor_pool = list(ctx.competitor_items[:10])
+                max_n = self.config.graph_sniper_neighbor_actions + self.config.sniper_competitor_actions
+                focus = list(dict.fromkeys(neighbor_pool[:self.config.graph_sniper_neighbor_actions * 4] + competitor_pool))
+                return focus, max_n
             focus = [str(ctx.target_item_id)] + list(ctx.competitor_items[:10])
             return list(dict.fromkeys(focus)), 1 + self.config.sniper_competitor_actions
-        if role == AgentRole.DIAGNOSTIC:
-            # Allow target + cluster neighbours for diagnostic probes.
-            focus = [str(ctx.target_item_id)] + list(ctx.target_cluster_items[:20])
-            return list(dict.fromkeys(focus)), 1 + self.config.sequential_filler_actions
         return [], 0
 
     def _sanitize_llm_actions(
@@ -984,7 +757,12 @@ class WorkerAgent:
                 f"{role.value} action generated by LLM"
             )
             if role == AgentRole.SNIPER:
-                rating = 5.0 if item_id == str(ctx.target_item_id) else 1.0
+                if self.config.graph_sniper:
+                    # All graph-sniper actions are positive (5.0): cluster neighbours build
+                    # 2-hop paths; competitor ratings inflate their degree to dilute their edges.
+                    rating = 5.0
+                else:
+                    rating = 5.0 if item_id == str(ctx.target_item_id) else 1.0
             else:
                 if self.config.implicit_safe:
                     rating = self._safe_rating_below_threshold()
@@ -1005,8 +783,9 @@ class WorkerAgent:
             if len(sanitized) >= max_actions:
                 break
 
-        if role == AgentRole.SNIPER and not any(action.item_id == str(ctx.target_item_id) for action in sanitized):
-            return []
+        if role == AgentRole.SNIPER and not self.config.graph_sniper:
+            if not any(action.item_id == str(ctx.target_item_id) for action in sanitized):
+                return []
         return sanitized
 
     def _act_with_llm(self, assignment: RoleAssignment, step: int, ctx: WorkerContext) -> List[RatingAction]:
@@ -1068,39 +847,41 @@ class WorkerAgent:
         )
         raw_response = ""
         llm_error: str | None = None
+        token_usage: Dict[str, int] | None = None
         try:
-            raw_response = self._llm_client.generate(request)
+            llm_resp = self._llm_client.generate(request)
+            raw_response = llm_resp.text
+            usage = llm_resp.usage
+            self._token_totals["prompt_tokens"] += usage.prompt_tokens
+            self._token_totals["completion_tokens"] += usage.completion_tokens
+            self._token_totals["total_tokens"] += usage.total_tokens
+            token_usage = {
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+            }
         except Exception as exc:
             llm_error = str(exc)
-        actions = (
-            self._sanitize_llm_actions(role, raw_response, allowed_items, max_actions, ctx)
-            if llm_error is None
-            else []
-        )
-        fallback_used = False
-        if not actions:
-            fallback_used = True
-            if role == AgentRole.PROFILER:
-                actions = self._act_profiler(ctx)
-            elif role == AgentRole.CAMOUFLAGEUR:
-                actions = self._act_camouflaguer(ctx)
-            elif role == AgentRole.SNIPER:
-                actions = self._act_sniper(ctx, assignment)
-            elif role == AgentRole.DIAGNOSTIC:
-                actions = self._act_diagnostic(ctx, assignment)
-            else:
-                actions = []
+        if llm_error is None:
+            actions = self._sanitize_llm_actions(role, raw_response, allowed_items, max_actions, ctx)
+        else:
+            actions = []
+
+        # Probe steps (profiler with diagnostic_type) use deterministic logic as fallback.
+        if not actions and (assignment.metadata or {}).get("diagnostic_type"):
+            actions = self._act_diagnostic(ctx, assignment)
 
         self.last_trace = {
             "prompt_key": bundle.key,
             "system_prompt": bundle.system_prompt,
             "user_prompt": user_prompt,
             "raw_response": raw_response,
-            "fallback_used": fallback_used,
-            "fallback_reason": "llm_error" if llm_error is not None else ("invalid_or_empty_response" if fallback_used else None),
+            "fallback_used": bool(not actions and llm_error is None),
+            "fallback_reason": "llm_error" if llm_error is not None else (None if actions else "invalid_or_empty_response"),
             "error": llm_error,
             "system_path": bundle.system_path,
             "user_path": bundle.user_path,
+            "token_usage": token_usage,
         }
         if self._unified_memory is not None:
             self._unified_memory.append(
@@ -1112,7 +893,6 @@ class WorkerAgent:
                     "actions": [
                         {"item_id": a.item_id, "rating": float(a.rating)} for a in actions
                     ],
-                    "fallback": bool(fallback_used),
                 }
             )
         return actions
@@ -1124,7 +904,7 @@ def build_worker_pool(
     policy_config: WorkerPolicyConfig | None = None,
     llm_client: LLMClient | None = None,
     prompt_store: PromptStore | None = None,
-    policy_name: str = "rule",
+    policy_name: str = "openai",
     temperature: float = 0.2,
     temperature_end: float | None = None,
     total_steps: int | None = None,

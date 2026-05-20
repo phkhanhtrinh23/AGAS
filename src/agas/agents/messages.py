@@ -14,7 +14,6 @@ class AgentRole(str, Enum):
     CAMOUFLAGEUR = "camouflaguer"
     SNIPER = "sniper"
     INACTIVE = "inactive"
-    DIAGNOSTIC = "diagnostic"  # probing step used for victim-model classification
 
 
 class VictimModelClass(str, Enum):
@@ -142,7 +141,7 @@ class WorkerActionReport:
     role: AgentRole
     actions: List[RatingAction] = field(default_factory=list)
     notes: Optional[str] = None
-    policy: str = "rule"
+    policy: str = "openai"
     trace: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:

@@ -1,20 +1,13 @@
 """LLM backend adapters.
 
-The paper's headline configuration uses the **OpenAI API** as the LLM backbone
-for both the Coordinator and the worker policies. The :class:`RuleBasedProvider`
-is a minimal deterministic fallback used when ``OPENAI_API_KEY`` is missing —
-this keeps the smoke tests and the public demo runnable without network access
-or a paid API key.
+Supports OpenAI (default) and Ollama backends.
 
-Provider selection order at runtime
------------------------------------
-1. ``provider="openai"`` (default) with a non-empty ``OPENAI_API_KEY`` → use
-   :class:`OpenAIClient` with the model from ``OPENAI_MODEL`` (default
-   ``gpt-5.1``).
-2. ``provider="rule"`` or ``OPENAI_API_KEY`` missing → fall back to
-   :class:`RuleBasedProvider` (emits an empty JSON action list; the worker /
-   coordinator then drops back to its own rule-based policy).
-3. ``provider="ollama"`` is also supported for local experiments.
+Provider selection
+------------------
+1. ``provider="openai"`` (default) — uses :class:`OpenAIClient` with the
+   model from ``OPENAI_MODEL`` env var (default ``gpt-5.1``). Requires
+   ``OPENAI_API_KEY`` to be set.
+2. ``provider="ollama"`` — uses :class:`OllamaClient` for local experiments.
 """
 
 from __future__ import annotations
@@ -36,20 +29,37 @@ class LLMRequest:
     system_prompt: str
     user_prompt: str
     temperature: float = 0.1
-    max_tokens: int = 700
+    max_tokens: int = 4000  # large enough for reasoning models (gpt-5.1, o-series) that consume tokens internally
+
+
+@dataclass
+class LLMUsage:
+    """Token usage counts for one LLM call."""
+
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+
+@dataclass
+class LLMResponse:
+    """Return value of LLMClient.generate — text plus token usage."""
+
+    text: str
+    usage: LLMUsage
 
 
 class LLMClient(Protocol):
     """Protocol for text generation backends."""
 
-    def generate(self, request: LLMRequest) -> str:
+    def generate(self, request: LLMRequest) -> LLMResponse:
         """Generate one text completion from a normalized request payload.
 
         Args:
             request: Provider-agnostic generation request payload.
 
         Returns:
-            Generated text response.
+            LLMResponse containing generated text and token usage.
         """
 
         ...
@@ -114,14 +124,14 @@ class OpenAIClient:
         except Exception as exc:
             raise LLMProviderError(f"Failed to initialize OpenAI client: {exc}") from exc
 
-    def generate(self, request: LLMRequest) -> str:
+    def generate(self, request: LLMRequest) -> LLMResponse:
         """Call the Responses API and normalize output into plain text.
 
         Args:
             request: Provider-agnostic generation request payload.
 
         Returns:
-            Generated text extracted from OpenAI response content.
+            LLMResponse with generated text and token usage.
         """
         try:
             response = self._client.responses.create(
@@ -134,7 +144,16 @@ class OpenAIClient:
             )
         except Exception as exc:
             raise LLMProviderError(f"OpenAI request failed for model '{self.model}': {exc}") from exc
-        return _extract_openai_response_text(response)
+        text = _extract_openai_response_text(response)
+        raw_usage = getattr(response, "usage", None)
+        usage = LLMUsage(
+            prompt_tokens=int(getattr(raw_usage, "input_tokens", 0) or 0),
+            completion_tokens=int(getattr(raw_usage, "output_tokens", 0) or 0),
+            total_tokens=int(getattr(raw_usage, "total_tokens", 0) or 0),
+        )
+        if usage.total_tokens == 0:
+            usage.total_tokens = usage.prompt_tokens + usage.completion_tokens
+        return LLMResponse(text=text, usage=usage)
 
 
 @dataclass
@@ -145,14 +164,14 @@ class OllamaClient:
     host: str = "http://localhost:11434"
     timeout_seconds: int = 120
 
-    def generate(self, request: LLMRequest) -> str:
+    def generate(self, request: LLMRequest) -> LLMResponse:
         """Call local Ollama ``/api/generate`` endpoint and return response text.
 
         Args:
             request: Provider-agnostic generation request payload.
 
         Returns:
-            Generated text returned by Ollama.
+            LLMResponse with generated text and token usage.
         """
 
         payload = {
@@ -173,30 +192,15 @@ class OllamaClient:
             raise LLMProviderError(f"Ollama request failed for model '{self.model}': {exc}") from exc
         except ValueError as exc:
             raise LLMProviderError(f"Ollama returned invalid JSON for model '{self.model}': {exc}") from exc
-        return str(data.get("response", "")).strip()
-
-
-@dataclass
-class RuleBasedProvider:
-    """Deterministic fallback provider.
-
-    This client returns an empty JSON action payload so that the calling
-    Coordinator / Worker immediately falls back to its own rule-based logic
-    (the rule fallback is implemented inside :mod:`agas.agents.worker` and
-    :mod:`agas.agents.coordinator`). It is the provider used when no
-    ``OPENAI_API_KEY`` is configured.
-
-    Returning an empty actions list is deliberate: it makes the rule fallback
-    the *single* deterministic policy when LLM access is unavailable, instead
-    of trying to imitate an LLM response.
-    """
-
-    model: str = "rule-based"
-
-    def generate(self, request: LLMRequest) -> str:  # noqa: D401 - protocol impl
-        """Always return an empty action list to force the rule fallback path."""
-
-        return '{"actions": [], "strategy": null, "rationale": "rule-based fallback"}'
+        text = str(data.get("response", "")).strip()
+        prompt_tokens = int(data.get("prompt_eval_count", 0) or 0)
+        completion_tokens = int(data.get("eval_count", 0) or 0)
+        usage = LLMUsage(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=prompt_tokens + completion_tokens,
+        )
+        return LLMResponse(text=text, usage=usage)
 
 
 def build_llm_client(
@@ -205,18 +209,10 @@ def build_llm_client(
     api_key: str | None = None,
     host: str | None = None,
 ) -> LLMClient:
-    """Factory for LLM clients with paper-aligned defaults.
-
-    Defaults
-    --------
-    * ``provider`` defaults to ``"openai"`` (the paper backbone).
-    * ``model`` defaults to the value of the ``OPENAI_MODEL`` environment
-      variable, falling back to ``"gpt-5.1"`` if unset.
-    * When ``OPENAI_API_KEY`` is missing the function emits a single warning
-      and returns a :class:`RuleBasedProvider`, regardless of ``provider``.
+    """Factory for LLM clients.
 
     Args:
-        provider: ``"openai"`` (default), ``"ollama"`` or ``"rule"``.
+        provider: ``"openai"`` (default) or ``"ollama"``.
         model: Model identifier passed to the chosen backend.
         api_key: OpenAI API key; defaults to ``OPENAI_API_KEY`` env var.
         host: Optional Ollama base URL.
@@ -229,16 +225,11 @@ def build_llm_client(
     resolved_model = model or os.environ.get("OPENAI_MODEL", "gpt-5.1")
     resolved_key = api_key or os.environ.get("OPENAI_API_KEY")
 
-    if provider == "rule":
-        return RuleBasedProvider(model=resolved_model)
-
     if provider == "openai":
         if not resolved_key:
-            _logger.warning(
-                "OPENAI_API_KEY is not set. Falling back to RuleBasedProvider — "
-                "results will be deterministic and not LLM-driven."
+            raise RuntimeError(
+                "OPENAI_API_KEY is not set. Set the environment variable or pass --openai-api-key."
             )
-            return RuleBasedProvider(model=resolved_model)
         return OpenAIClient(model=resolved_model, api_key=resolved_key)
 
     if provider == "ollama":

@@ -5,8 +5,7 @@ The public API consists of three paper-aligned modules:
 * :mod:`agas.roles`      – the four worker roles ``{PR, SN, CA, IN}``.
 * :mod:`agas.signals`    – worker signals ``τ, γ, φ`` and environment signals
                            ``ρ, Δρ, η, ξ, a``.
-* :mod:`agas.strategies` – the eight Coordinator strategies and the rule-based
-                           selector that materialises the triggers from
+* :mod:`agas.strategies` – the eight Coordinator strategies from
                            ``method_strategies.tex``.
 """
 
@@ -21,8 +20,6 @@ from agas.signals import (
 from agas.strategies import (
     STRATEGY_DESCRIPTIONS,
     Strategy,
-    StrategySelectorConfig,
-    select_strategy,
 )
 
 __all__ = [
@@ -36,7 +33,5 @@ __all__ = [
     "initial_env_signals",
     "Strategy",
     "STRATEGY_DESCRIPTIONS",
-    "StrategySelectorConfig",
-    "select_strategy",
 ]
 __version__ = "0.1.0"

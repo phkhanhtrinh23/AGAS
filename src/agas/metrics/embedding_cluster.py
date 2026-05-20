@@ -116,15 +116,29 @@ def compute_embedding_cluster_metrics(
         EmbeddingClusterMetrics, or None when the model has no SVD factors yet
         (too few interactions to factorize).
     """
-    if model.user_factors is None:
-        return None
+    # Resolve user embedding matrix — supports MF surrogate (user_factors) and LightGCN.
+    user_factors = getattr(model, "user_factors", None)
+    if user_factors is None:
+        # Try LightGCN: extract propagated user embeddings from the fitted model.
+        try:
+            import torch
+            lgcn_model = getattr(model, "model", None)
+            norm_adj = getattr(model, "_norm_adj", None)
+            if lgcn_model is not None and norm_adj is not None:
+                with torch.no_grad():
+                    u_emb, _ = lgcn_model.propagate(norm_adj)
+                user_factors = u_emb.cpu().numpy()
+            else:
+                return None
+        except Exception:
+            return None
 
     if rng is None:
         rng = np.random.default_rng(42)
 
     worker_id_set = {str(w) for w in worker_ids}
 
-    # Fake users that actually received an SVD row (had enough rating interactions)
+    # Fake users that have a row in the embedding matrix.
     embedded_workers = [wid for wid in worker_id_set if wid in model.user_to_idx]
     if not embedded_workers:
         return EmbeddingClusterMetrics(
@@ -140,7 +154,7 @@ def compute_embedding_cluster_metrics(
         )
 
     fake_indices = np.array([model.user_to_idx[wid] for wid in embedded_workers], dtype=int)
-    fake_vecs = model.user_factors[fake_indices]  # (n_fake, D)
+    fake_vecs = user_factors[fake_indices]  # (n_fake, D)
     n_fake = len(embedded_workers)
 
     # Real user baseline sample
@@ -155,7 +169,7 @@ def compute_embedding_cluster_metrics(
         real_ids_sampled = real_ids
 
     real_indices = np.array([model.user_to_idx[uid] for uid in real_ids_sampled], dtype=int)
-    real_vecs = model.user_factors[real_indices]  # (n_real, D)
+    real_vecs = user_factors[real_indices]  # (n_real, D)
 
     # Intra-fake pairwise cosine similarity
     if n_fake >= 2:

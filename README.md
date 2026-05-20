@@ -207,7 +207,154 @@ Round  2 | ρ = 1212  Δρ = +238   strategy = S3_WARM_UP
 [RQ1] Done. Expected outputs in agent_attack_rs/outputs/rq1_performance
 ```
 
-## 6. Protocol and prompts
+## 6. Token logging, role activation & strategy tracking
+
+Every `run-episode` call automatically computes and logs three types of analytics:
+
+### 6a. Token usage
+
+Tokens are counted per LLM call and accumulated across the episode for the
+coordinator and for each worker agent separately.  They are printed to the
+console after the episode and saved inside the output JSON under
+`token_usage`.
+
+**Console output example:**
+
+```
+--- Token Usage ---
+  Coordinator : prompt=20,043  completion=2,526  total=22,569
+  agent_1     : prompt=1,308   completion=619    total=1,927
+  agent_2     : prompt=3,930   completion=451    total=4,381
+  agent_3     : prompt=0       completion=0      total=0
+  AGGREGATE   : prompt=25,281  completion=3,596  total=28,877
+-------------------
+```
+
+**JSON structure** (`output["token_usage"]`):
+
+```json
+{
+  "coordinator": {"prompt_tokens": 20043, "completion_tokens": 2526, "total_tokens": 22569},
+  "by_agent":    {"agent_1": {"prompt_tokens": 1308, ...}, ...},
+  "aggregate":   {"prompt_tokens": 25281, "completion_tokens": 3596, "total_tokens": 28877}
+}
+```
+
+**Reading token counts from a saved run:**
+
+```python
+import json
+with open("outputs/my_run.json") as f:
+    data = json.load(f)
+
+agg = data["token_usage"]["aggregate"]
+print(f"Total tokens used: {agg['total_tokens']:,}")
+print(f"  Prompt     : {agg['prompt_tokens']:,}")
+print(f"  Completion : {agg['completion_tokens']:,}")
+
+# Per-step token usage (inside each worker trace)
+for step in data["history"]:
+    for report in step["reports"]:
+        tok = (report.get("trace") or {}).get("token_usage") or {}
+        print(f"Step {step['step']} {report['agent_id']}: {tok.get('total_tokens', 0)} tokens")
+```
+
+**Provider notes:**
+
+| Provider | Fields read |
+|----------|-------------|
+| OpenAI Responses API | `response.usage.input_tokens`, `.output_tokens` |
+| Ollama `/api/generate` | `data["prompt_eval_count"]`, `data["eval_count"]` |
+
+### 6b. Role activation counts
+
+After each episode, the CLI counts how many times each role was assigned
+across all agents and all steps.  Printed to console and saved under
+`output["activation_stats"]["role_counts"]`.
+
+**Console output example:**
+
+```
+--- Role Activations ---
+  inactive          : 10
+  profiler          : 4
+--- Role Activations by Agent ---
+  agent_1     : inactive=3  profiler=1  
+  agent_2     : profiler=3  inactive=2
+  agent_3     : inactive=5
+```
+
+**Reading role counts programmatically:**
+
+```python
+stats = data["activation_stats"]
+print("Most used role:", max(stats["role_counts"], key=stats["role_counts"].get))
+print("Role counts:", stats["role_counts"])
+print("By agent:", stats["role_counts_by_agent"])
+```
+
+### 6c. Strategy activation counts
+
+The coordinator's role-assignment pattern is mapped to one of the eight
+paper strategies (S1–S8) each step using the following inference rules:
+
+| Condition | Inferred strategy |
+|-----------|-------------------|
+| Probe phase / diagnostic agent active | `S1_VICTIM_PROBE` |
+| Alert flag set (`a_t = 1`) | `S7_SAFE_REPLACEMENT` |
+| Max suspicion score ≥ 0.5 | `S6_PROFILE_CLEANUP` |
+| No snipers + visible discounting | `S5_SILENT_SLOWDOWN` |
+| No snipers + no discounting | `S3_WARM_UP` |
+| Snipers active | `S4_FIRST_PUSH` |
+| Snipers active | `S8_MAIN_ATTACK` |
+
+Saved under `output["activation_stats"]["strategy_counts"]`.
+
+**Console output example:**
+
+```
+--- Strategy Activations ---
+  S1_VICTIM_PROBE          : 1
+  S3_WARM_UP               : 4
+```
+
+### 6d. Per-run human-readable log
+
+A `.log` file is written alongside every output JSON automatically
+(e.g. `outputs/my_run.log`).  It contains:
+
+- Episode metadata (dataset, target, agent count, policies)
+- Per-step timeline: rank, strategy, each agent's role, actions, and per-call token count
+- Token usage summary
+- Role and strategy activation tallies
+
+**Running the CLI and reading the log:**
+
+```bash
+agas run-episode \
+  --dataset ml-latest-small \
+  --target-item-id 2571 \
+  --target-keyword "Matrix" \
+  --num-agents 3 \
+  --num-steps 10 \
+  --coordinator-policy openai \
+  --worker-policy openai \
+  --output outputs/run_matrix.json
+
+# Human-readable log is at:
+cat outputs/run_matrix.log
+
+# JSON output is at:
+python -c "
+import json
+d = json.load(open('outputs/run_matrix.json'))
+print('Token aggregate:', d['token_usage']['aggregate'])
+print('Role counts:',    d['activation_stats']['role_counts'])
+print('Strategy counts:',d['activation_stats']['strategy_counts'])
+"
+```
+
+## 7. Protocol and prompts
 
 The Coordinator and every worker are LLM agents that read from
 `prompts/<role>/{system,user}.txt`. The full protocol — what the
@@ -221,16 +368,6 @@ Brief summary:
 * Workers → JSON with `{"actions": [{"item_id": …, "rating": …, "reason": …}]}`.
 * Allowed item pools are role-dependent (filler pool, bridge pool, target +
   competitors) and enforced by the host code.
-
-## 7. Reproducing tables and figures
-
-| Research question | Script                           |
-|-------------------|----------------------------------|
-| RQ1 (Performance) | `bash/run_performance.sh`        |
-| RQ2 (Stealth)     | `bash/run_stealth_and_detect.sh` |
-| RQ3 (Detectors)   | `bash/run_stealth_and_detect.sh` |
-| RQ4 (Ablation)    | `bash/run_ablation.sh`           |
-| RQ5 (Efficiency)  | `bash/run_efficiency.sh`         |
 
 ## 8. Reproduced results from the paper
 
