@@ -1180,7 +1180,6 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
 
     split_by_target = bool(getattr(args, "transfer_split_by_target_model", False))
 
-    surrogate_result = None
     coordinator = None
     workers: dict = {}
     attack_rows = pd.DataFrame(columns=["user_id", "item_id", "rating"])
@@ -1190,15 +1189,16 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
     clone_profiles = bool(getattr(args, "clone_segment_users_to_agents", False))
     episode_histories_by_target: dict[str, list[dict]] | None = None
     per_target_settings: dict[str, dict] | None = None
-    if mode in {"both", "option-a"} and not split_by_target:
-        episode_model = str(getattr(args, "episode_model", "surrogate")).strip().lower()
+
+    # Shared setup: episode model, agent IDs, clone profiles, bridge items.
+    # Done unconditionally so option-b standalone has everything it needs.
+    episode_model = str(getattr(args, "episode_model", "lightgcn")).strip().lower()
+    use_segment_users = bool(getattr(args, "use_segment_users_as_agents", False))
+
+    if not split_by_target:
         base_env, candidate_items, segment_user_ids = _build_env_and_candidate(
             episode_model, args.transfer_candidate_set
         )
-
-        # RC1+RC2 fix: reuse real segment users as attack agents so they already have
-        # embeddings and graph edges in the target models trained on clean data.
-        use_segment_users = bool(getattr(args, "use_segment_users_as_agents", False))
         if use_segment_users:
             if len(segment_user_ids) < args.num_agents:
                 raise RuntimeError(
@@ -1228,7 +1228,6 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
             else:
                 print(f"Bridge-item selection ({bridge_method}): episode model is not LightGCN or not yet fitted — falling back to cluster/benchmark items.")
         elif bool(getattr(args, "profiler_gradient_selection", False)):
-            # Legacy flag — kept for backward compat
             n_bridge = max(50, int(getattr(args, "profiler_actions", 3)) * 4)
             n_found = len(base_env.compute_bridge_items(n=n_bridge, method="gradient"))
             if n_found:
@@ -1239,7 +1238,12 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         if bool(getattr(args, "competitor_flood", False)):
             n_flood = int(getattr(args, "competitor_flood_size", 300))
             base_env.compute_flooding_items(n=n_flood)
+    else:
+        agent_ids = default_agent_ids(args.num_agents)
+        candidate_items = []
+        segment_user_ids = []
 
+    if mode in {"both", "option-a"} and not split_by_target:
         coordinator, workers = _build_coordinator_and_workers(
             args=args,
             agent_ids=agent_ids,
@@ -1261,9 +1265,9 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 profile_validator_threshold=float(getattr(args, "profile_validator_threshold", 0.7)),
             ),
         )
-        surrogate_result = runner.run()
-        attack_rows = _extract_attack_interactions(surrogate_result.history, roles=attack_roles)
-        attack_stats = _attack_outcome_stats(surrogate_result.history, positive_threshold=target_config.positive_threshold)
+        option_a_episode_result = runner.run()
+        attack_rows = _extract_attack_interactions(option_a_episode_result.history, roles=attack_roles)
+        attack_stats = _attack_outcome_stats(option_a_episode_result.history, positive_threshold=target_config.positive_threshold)
 
     option_a_results: dict[str, dict] = {}
     if mode in {"both", "option-a"}:
@@ -1469,10 +1473,15 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
     if mode in {"both", "option-b"}:
         for name in target_models:
             target_model = _build_target_model(name, target_config)
-            target_model.fit(interactions, items=items)
+            # Include cloned warm-start profiles in the initial fit so fake users
+            # are not cold-start when the episode begins.
+            b_base_training = interactions
+            if len(cloned_rows):
+                b_base_training = pd.concat([b_base_training, cloned_rows], ignore_index=True)
+            target_model.fit(b_base_training, items=items)
             env = AGASEnvironment(
                 recommender=target_model,
-                base_interactions=interactions,
+                base_interactions=b_base_training,
                 items=items,
                 target_item_id=target_item_id,
                 target_keyword=args.target_keyword,
@@ -1491,6 +1500,11 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 ),
                 seed=args.seed,
             )
+            # Carry bridge/flooding pools from shared env into option-b env.
+            if not split_by_target:
+                env.bridge_items = base_env.bridge_items
+                env.flooding_items = base_env.flooding_items
+                env.segment_profile_items = base_env.segment_profile_items
             initial_rank = int(env.current_rank)
             coordinator, workers = _build_coordinator_and_workers(
                 args=args,
@@ -1589,15 +1603,11 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
         "transfer_attack_roles": str(getattr(args, "transfer_attack_roles", "all")),
         "option_a": option_a_results if option_a_results else None,
         "option_b": option_b_results if option_b_results else None,
-        "surrogate_episode_history": surrogate_result.history if surrogate_result is not None else None,
         "episode_histories_by_target": episode_histories_by_target,
         "per_target_transfer_settings": per_target_settings,
         "attack_interactions_stats": attack_stats,
         "profile_validator_enabled": bool(getattr(args, "profile_validator", False)),
         "profile_validator_threshold": float(getattr(args, "profile_validator_threshold", 0.7)),
-        "profile_validator_scores": (
-            surrogate_result.profile_validator_scores if surrogate_result is not None else {}
-        ),
         "token_usage": _collect_token_usage(coordinator, workers),
     }
 
@@ -2163,13 +2173,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_transfer.add_argument(
         "--episode-model",
-        choices=["surrogate", "lightgcn", "neumf", "sequential"],
-        default="surrogate",
+        choices=["lightgcn", "neumf", "sequential"],
+        default="lightgcn",
         help=(
-            "Recommender used during the episode loop that generates attack interactions for Option A. "
-            "Default 'surrogate' uses the lightweight SVD-based surrogate. "
-            "Set to 'lightgcn', 'neumf', or 'sequential' to run the episode loop on that target-model family, then "
-            "still evaluate offline transfer to --target-models afterward."
+            "Recommender used during the episode loop. Default 'lightgcn' runs the full attack "
+            "directly on LightGCN, retraining it after every round so the coordinator receives "
+            "real victim-rank feedback. Set to 'neumf' or 'sequential' for those target families."
         ),
     )
     p_transfer.add_argument(

@@ -207,8 +207,7 @@ Round  2 | ρ = 1212  Δρ = +238   strategy = S3_WARM_UP
 [RQ1] Done. Expected outputs in agent_attack_rs/outputs/rq1_performance
 ```
 
-2-hop bridge path `fake_user → bridge_item → segment_user →
-target` carries meaningful normalised weight.
+### Transfer attack against LightGCN (in-loop)
 
 ```bash
 agas run-transfer \
@@ -222,25 +221,23 @@ agas run-transfer \
   --probe-steps 0 \
   --graph-sniper \
   --clone-segment-users-to-agents \
+  --transfer-mode option-b \
   --target-models lightgcn \
   --target-epochs 50 \
   --target-embedding-dim 32 \
   --target-lightgcn-layers 3 \
-  --output outputs/run_transfer_warmstart.json
+  --output outputs/run_transfer_lightgcn_inloop.json
 ```
 
 | Flag | Meaning |
 |---|---|
+| `--transfer-mode option-b` | Run LightGCN as the live episode model — retrains after every round, coordinator sees real rank. |
 | `--profiler-bridge-method cooccurrence` | Select bridge items by co-occurrence frequency with the target's rater cluster. |
-| `--graph-sniper` | Enable graph-aware sniper mode: snipers work through bridge items instead of rating the target directly. |
-| `--target-models lightgcn` | Evaluate transfer success against a held-out LightGCN retrained on clean + fake data. |
 
-After the run, results are saved to the output JSON and printed to the console:
+After the run, results are printed and saved to the output JSON:
 
 ```
-Transfer evaluation saved to outputs/run_transfer_warmstart.json
-Option A (offline target models):
-  lightgcn: rank <before>-><after> (delta <Δ>) using <N> attack interactions, HR@10=..., NDCG@10=...
+Transfer evaluation saved to outputs/run_transfer_lightgcn_inloop.json
 Option B (in-loop target models):
   lightgcn: final rank <final> (best <best>)
 ```
