@@ -229,7 +229,7 @@ agas run-transfer \
   --output outputs/run_transfer_lightgcn_inloop.json
 ```
 
-`--profiler-bridge-method cooccurrence` : Select bridge items by co-occurrence frequency with the target's rater cluster.
+`--profiler-bridge-method cooccurrence`: Select bridge items by co-occurrence frequency with the target's rater cluster.
 
 After the run, results are printed and saved to the output JSON:
 
