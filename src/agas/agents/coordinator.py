@@ -135,9 +135,10 @@ _VICTIM_COORDINATOR_GUIDANCE: Dict[str, str] = {
         "- Typical progression: steps 0-2 → profiler builds graph proximity; "
         "steps 3+ → mix of sniper (cluster neighbours) and camouflageur; "
         "do NOT stay in warm-up for more than 2-3 consecutive steps.\n"
-        "- Budget awareness: with a SMALL agent budget (few fake users), profiler and "
-        "camouflaguer must first build graph proximity before snipers fire. With a LARGE "
-        "budget (many real users), lighter profiling is sufficient.\n"
+        "- AGENT SCALING RULE: You MUST activate at least 80% of agents as profiler, "
+        "camouflageur, or sniper every step. NEVER mark more than 20% of agents as inactive. "
+        "With a large pool (>10 agents), spread roles across many agents — especially deploy "
+        "more snipers once bridge-building is done (step 3+).\n"
         "- Camouflaguer is valuable here: cluster ratings build graph proximity without "
         "inflating the target's degree.\n"
         "- Keep total sniper interactions per agent low — graph diffusion accumulates slowly."
@@ -532,6 +533,31 @@ class LLMCoordinatorPolicy:
                 rationale="LLM-coordinator assignment.",
                 metadata=metadata,
             )
+
+        # Enforce minimum active fraction: at least 80% of agents must be active.
+        # If the LLM left too many inactive, promote extras to camouflaguer.
+        n_total = len(self.agent_order)
+        if n_total > 10:
+            min_active = max(1, int(n_total * 0.8))
+            active_ids = [
+                aid for aid in self.agent_order
+                if result[aid].role != AgentRole.INACTIVE
+            ]
+            if len(active_ids) < min_active:
+                inactive_ids = [
+                    aid for aid in self.agent_order
+                    if result[aid].role == AgentRole.INACTIVE
+                ]
+                import random as _random
+                to_promote = inactive_ids[: min_active - len(active_ids)]
+                for aid in to_promote:
+                    result[aid] = RoleAssignment(
+                        step=step,
+                        agent_id=aid,
+                        role=AgentRole.CAMOUFLAGEUR,
+                        rationale="Auto-promoted from inactive to meet minimum active fraction.",
+                    )
+
         return result
 
 

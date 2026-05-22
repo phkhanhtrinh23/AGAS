@@ -207,6 +207,44 @@ Round  2 | ρ = 1212  Δρ = +238   strategy = S3_WARM_UP
 [RQ1] Done. Expected outputs in agent_attack_rs/outputs/rq1_performance
 ```
 
+2-hop bridge path `fake_user → bridge_item → segment_user →
+target` carries meaningful normalised weight.
+
+```bash
+agas run-transfer \
+  --dataset ml-latest-small \
+  --target-item-id 7114 \
+  --target-keyword horror \
+  --num-agents 50 \
+  --num-steps 10 \
+  --victim-model-hint lightgcn \
+  --profiler-bridge-method cooccurrence \
+  --probe-steps 0 \
+  --graph-sniper \
+  --clone-segment-users-to-agents \
+  --target-models lightgcn \
+  --target-epochs 50 \
+  --target-embedding-dim 32 \
+  --target-lightgcn-layers 3 \
+  --output outputs/run_transfer_warmstart.json
+```
+
+| Flag | Meaning |
+|---|---|
+| `--profiler-bridge-method cooccurrence` | Select bridge items by co-occurrence frequency with the target's rater cluster. |
+| `--graph-sniper` | Enable graph-aware sniper mode: snipers work through bridge items instead of rating the target directly. |
+| `--target-models lightgcn` | Evaluate transfer success against a held-out LightGCN retrained on clean + fake data. |
+
+After the run, results are saved to the output JSON and printed to the console:
+
+```
+Transfer evaluation saved to outputs/run_transfer_warmstart.json
+Option A (offline target models):
+  lightgcn: rank <before>-><after> (delta <Δ>) using <N> attack interactions, HR@10=..., NDCG@10=...
+Option B (in-loop target models):
+  lightgcn: final rank <final> (best <best>)
+```
+
 ## 6. Token logging, role activation & strategy tracking
 
 Every `run-episode` call automatically computes and logs three types of analytics:

@@ -37,6 +37,15 @@ class WorkerContext:
     # points most strongly toward the target neighbourhood.  Empty list when
     # gradient selection is disabled or episode model is not LightGCN.
     bridge_items: Sequence[str] = ()
+    # Items ranked above the target by the surrogate (segment-averaged score).
+    # Populated when --competitor-flood is enabled.  Snipers rate these at 5.0
+    # to inflate their degrees, diluting their D^{-1/2}AD^{-1/2} weights and
+    # pushing them below the target in the ranking.
+    flooding_items: Sequence[str] = ()
+    # Items most frequently rated by real segment users (excl. target).
+    # Populated always from base interactions.  Profilers draw from this pool
+    # in segment-mimic mode to organically build segment-user-like profiles.
+    segment_profile_items: Sequence[str] = ()
 
 
 @dataclass
@@ -78,6 +87,20 @@ class WorkerPolicyConfig:
     # (not benchmark/popular items), regardless of victim_model_class, so the fake user
     # accumulates edges in the target neighbourhood before the sniper action.
     profiler_use_cluster: bool = False
+    # Competitor-flood mode: snipers rate items ranked above the target at 5.0 to
+    # inflate their degrees.  Under D^{-1/2}AD^{-1/2} normalisation this dilutes all
+    # their existing edges, pushing them down in the ranking so the target rises
+    # without being directly touched.  Requires flooding_items to be populated in
+    # WorkerContext via AGASEnvironment.compute_flooding_items().
+    competitor_flood: bool = False
+    competitor_flood_actions: int = 5
+    # Segment-mimic profiler mode: instead of rating popular benchmark/cluster
+    # items, profilers draw from segment_profile_items — items most frequently
+    # rated by real segment users.  Over many profiler rounds the fake user
+    # accumulates a profile that closely mirrors a genuine segment user, giving
+    # LightGCN retraining a strong first-order signal without copying any
+    # single real user's history verbatim.
+    profiler_segment_mimic: bool = False
 
 
 class WorkerAgent:
@@ -367,7 +390,13 @@ class WorkerAgent:
         ).lower()
         budget = str(getattr(self.config, "lightgcn_budget", "small")).lower()
         # Resolve LightGCN into budget-specific sub-key so prompt tables stay flat.
-        effective_class = f"lightgcn_{budget}" if victim_class == "lightgcn_style" else victim_class
+        # Segment-mimic mode overrides the profiler sub-key regardless of budget.
+        if victim_class == "lightgcn_style" and self.config.profiler_segment_mimic:
+            effective_class = "lightgcn_segment_mimic"
+        elif victim_class == "lightgcn_style":
+            effective_class = f"lightgcn_{budget}"
+        else:
+            effective_class = victim_class
 
         # ------------------------------------------------------------------
         # PROFILER prompts
@@ -390,6 +419,18 @@ class WorkerAgent:
                 "Do NOT rate the target item itself — that inflates its degree. "
                 "Return strictly valid JSON: "
                 '{"actions":[{"item_id":"...","rating":5.0,"reason":"..."}]}.'
+            ),
+            "lightgcn_segment_mimic": (
+                "You are the Profiler attack agent in an AGAS simulation targeting a LightGCN-style "
+                "recommender. Your goal is to build an authentic user profile that closely mirrors "
+                "the taste of real users who enjoy the target genre. The allowed items are drawn from "
+                "the interaction histories of genuine segment users — rate them naturally and "
+                "authentically, as a real fan of this content would. Over multiple rounds your profile "
+                "will organically resemble a true segment user, giving the recommender strong "
+                "first-order evidence that you belong to the target audience. "
+                "Do NOT rate the target item itself. "
+                "Return strictly valid JSON: "
+                '{"actions":[{"item_id":"...","rating":4.0,"reason":"..."}]}.'
             ),
             "lightgcn_large": (
                 "You are the Profiler attack agent in an AGAS simulation targeting a LightGCN-style "
@@ -421,6 +462,12 @@ class WorkerAgent:
                 "Select up to {{max_actions}} cluster-item ratings to establish graph proximity.\n"
                 "Context:\n{{context_json}}\n"
                 "Choose items from target_cluster_items only. Do NOT include the target item itself."
+            ),
+            "lightgcn_segment_mimic": (
+                "Select up to {{max_actions}} items to rate from segment_profile_items.\n"
+                "Context:\n{{context_json}}\n"
+                "Choose items you have NOT already rated. Rate them as a genuine fan would — "
+                "vary ratings naturally (3.0–5.0). Do NOT include the target item itself."
             ),
             "lightgcn_large": (
                 "Select up to {{max_actions}} benchmark-item ratings to verify system acceptance.\n"
@@ -677,11 +724,14 @@ class WorkerAgent:
             return list(dict.fromkeys(focus)), 1 + self.config.sequential_filler_actions
 
         if role == AgentRole.PROFILER:
-            if ctx.bridge_items:
+            if self.config.profiler_segment_mimic and ctx.segment_profile_items:
+                # Segment-mimic mode: draw from items real segment users rated.
+                # Over many profiler rounds the fake user builds an organic profile
+                # that resembles a genuine segment user without copying any one
+                # user's history verbatim.
+                focus = [i for i in ctx.segment_profile_items[:80] if str(i) != str(ctx.target_item_id)]
+            elif ctx.bridge_items:
                 # Gradient-selected bridge items take priority when available.
-                # These are the items whose LightGCN propagated embedding points
-                # most strongly toward the target neighbourhood — stronger 2-hop
-                # paths than random cluster or benchmark items.
                 focus = [i for i in ctx.bridge_items if str(i) != str(ctx.target_item_id)]
             elif effective_class == "lightgcn_small" or self.config.profiler_use_cluster:
                 # Build graph proximity: use cluster items (exclude target).
@@ -701,15 +751,25 @@ class WorkerAgent:
             return list(dict.fromkeys(focus)), self.config.camouflaguer_actions
         if role == AgentRole.SNIPER:
             if self.config.graph_sniper:
-                # LightGCN mode: rate cluster-neighbour/bridge items + competitors at 5.0;
-                # never include the target (direct edges inflate its degree and dilute edges).
+                # LightGCN mode: rate cluster-neighbour/bridge items at 5.0 to build
+                # 2-hop paths; never include the target (direct edges inflate its degree).
                 neighbor_pool = list(ctx.bridge_items) or [
                     i for i in ctx.target_cluster_items if str(i) != str(ctx.target_item_id)
                 ]
                 neighbor_pool = [i for i in neighbor_pool if str(i) != str(ctx.target_item_id)]
-                competitor_pool = list(ctx.competitor_items[:10])
-                max_n = self.config.graph_sniper_neighbor_actions + self.config.sniper_competitor_actions
-                focus = list(dict.fromkeys(neighbor_pool[:self.config.graph_sniper_neighbor_actions * 4] + competitor_pool))
+                if self.config.competitor_flood and ctx.flooding_items:
+                    # Asymmetric flood: rate items ranked above the target at 5.0 to inflate
+                    # their degrees and dilute their edges, pushing them down so the target rises.
+                    flood_pool = [i for i in ctx.flooding_items if str(i) != str(ctx.target_item_id)]
+                    max_n = self.config.graph_sniper_neighbor_actions + self.config.competitor_flood_actions
+                    focus = list(dict.fromkeys(
+                        neighbor_pool[:self.config.graph_sniper_neighbor_actions * 4]
+                        + flood_pool[:self.config.competitor_flood_actions * 4]
+                    ))
+                else:
+                    competitor_pool = list(ctx.competitor_items[:10])
+                    max_n = self.config.graph_sniper_neighbor_actions + self.config.sniper_competitor_actions
+                    focus = list(dict.fromkeys(neighbor_pool[:self.config.graph_sniper_neighbor_actions * 4] + competitor_pool))
                 return focus, max_n
             focus = [str(ctx.target_item_id)] + list(ctx.competitor_items[:10])
             return list(dict.fromkeys(focus)), 1 + self.config.sniper_competitor_actions
@@ -816,6 +876,7 @@ class WorkerAgent:
             "target_cluster_items": list(ctx.target_cluster_items[:20]),
             "competitor_items": list(ctx.competitor_items[:10]),
             "noise_items": list(ctx.noise_items[:20]),
+            "segment_profile_items": list(ctx.segment_profile_items[:40]),
             "trajectory_summary": (
                 self._unified_memory.snapshot()
                 if self._unified_memory is not None

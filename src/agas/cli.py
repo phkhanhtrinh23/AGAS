@@ -314,6 +314,9 @@ def _build_coordinator_and_workers(
         profiler_actions=int(getattr(args, "profiler_actions", 3)),
         camouflaguer_actions=int(getattr(args, "camouflaguer_actions", 2)),
         profiler_use_cluster=bool(getattr(args, "profiler_use_cluster", False)),
+        competitor_flood=bool(getattr(args, "competitor_flood", False)),
+        competitor_flood_actions=int(getattr(args, "competitor_flood_actions", 5)),
+        profiler_segment_mimic=bool(getattr(args, "profiler_segment_mimic", False)),
     )
     workers = build_worker_pool(
         agent_ids,
@@ -502,8 +505,14 @@ def _clone_segment_profiles_for_agents(
     segment_user_ids: Sequence[str],
     *,
     seed: int,
+    exclude_item_id: str | None = None,
 ) -> tuple[pd.DataFrame, dict[str, str]]:
     """Clone real-user profiles onto fake agent IDs for offline training.
+
+    Copies each segment user's full interaction history onto a fake agent ID,
+    giving the fake user warm-started graph connections for LightGCN.
+    The target item is excluded from all cloned rows to avoid inflating its
+    degree and diluting its D^{-1/2}AD^{-1/2} edge weights.
 
     Returns cloned interaction rows and a mapping of fake_agent_id -> source_user_id.
     """
@@ -520,8 +529,11 @@ def _clone_segment_profiles_for_agents(
 
     frames: list[pd.DataFrame] = []
     user_col = interactions["user_id"].astype(str)
+    item_col = interactions["item_id"].astype(str)
     for agent_id, src_user in mapping.items():
         src_mask = user_col == str(src_user)
+        if exclude_item_id is not None:
+            src_mask = src_mask & (item_col != str(exclude_item_id))
         if not src_mask.any():
             continue
         clone = interactions[src_mask].copy()
@@ -1203,10 +1215,11 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                     agent_ids,
                     segment_user_ids,
                     seed=args.seed,
+                    exclude_item_id=target_item_id,
                 )
 
         bridge_method = getattr(args, "profiler_bridge_method", "none")
-        if bridge_method in ("cooccurrence", "gradient", "auto", "low_degree_structural"):
+        if bridge_method in ("cooccurrence", "gradient", "auto", "low_degree_structural", "hub_degree_structural", "two_hop_direct"):
             n_bridge = max(50, int(getattr(args, "profiler_actions", 3)) * 4)
             auto_threshold = int(getattr(args, "profiler_bridge_auto_threshold", 100))
             n_found = len(base_env.compute_bridge_items(n=n_bridge, method=bridge_method, auto_threshold=auto_threshold))
@@ -1222,6 +1235,10 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 print(f"Gradient bridge-item selection: {n_found} items selected for profiler pool.")
             else:
                 print("Gradient bridge-item selection: episode model is not LightGCN or not yet fitted — falling back to cluster/benchmark items.")
+
+        if bool(getattr(args, "competitor_flood", False)):
+            n_flood = int(getattr(args, "competitor_flood_size", 300))
+            base_env.compute_flooding_items(n=n_flood)
 
         coordinator, workers = _build_coordinator_and_workers(
             args=args,
@@ -1360,6 +1377,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                             agent_ids,
                             segment_user_ids,
                             seed=args.seed,
+                            exclude_item_id=str(target_item_id),
                         )
 
                 # Clone args for per-target overrides
@@ -1783,11 +1801,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_run.add_argument(
         "--profiler-bridge-method",
         default="none",
-        choices=["none", "cooccurrence", "gradient", "auto", "low_degree_structural"],
+        choices=["none", "cooccurrence", "gradient", "auto", "low_degree_structural", "hub_degree_structural", "two_hop_direct"],
         help="How to compute bridge items for the profiler pool. "
              "'cooccurrence' finds items sharing users with the target segment. "
              "'gradient' requires a fitted LightGCN surrogate. "
-             "'low_degree_structural' selects 2-hop items outside the target cluster scored by proximity/sqrt(degree).",
+             "'low_degree_structural' selects 2-hop items outside the cluster scored by proximity/sqrt(degree). "
+             "'hub_degree_structural' selects 2-hop items scored by proximity/degree — favours high-degree hubs where fake edges cause minimal normalisation dilution.",
     )
     p_run.add_argument("--profiler-use-cluster", action="store_true", default=False,
                        help="Profiler always draws from target cluster items (not benchmark).")
@@ -1964,6 +1983,29 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_transfer.add_argument(
+        "--competitor-flood",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Enable competitor-flood mode. Snipers rate items ranked above the target at 5.0 "
+            "to inflate their degrees. Under D^{-1/2}AD^{-1/2} normalisation this dilutes all "
+            "their existing edges, pushing them below the target without touching the target directly. "
+            "Requires --graph-sniper to be active."
+        ),
+    )
+    p_transfer.add_argument(
+        "--competitor-flood-size",
+        type=int,
+        default=300,
+        help="Number of items ranked above the target to include in the flood pool (default: 300).",
+    )
+    p_transfer.add_argument(
+        "--competitor-flood-actions",
+        type=int,
+        default=5,
+        help="Number of flooding items each sniper rates per step (default: 5).",
+    )
+    p_transfer.add_argument(
         "--victim-model-hint",
         choices=["auto", "mf", "lightgcn", "sequential"],
         default="auto",
@@ -2051,6 +2093,20 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     p_transfer.add_argument(
+        "--profiler-segment-mimic",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Enable segment-mimic profiler mode. Profilers draw from items most frequently "
+            "rated by real segment users (the target audience fingerprint), instead of "
+            "benchmark or cluster items. Over many rounds (use --profiler-actions 8 "
+            "--num-steps 15) each fake user organically builds a profile that resembles "
+            "a genuine segment user without copying any single real user verbatim. "
+            "When LightGCN retrains, these fake users learn embeddings close to real "
+            "segment users, amplifying first-order signal for the target."
+        ),
+    )
+    p_transfer.add_argument(
         "--profiler-gradient-selection",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -2066,7 +2122,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_transfer.add_argument(
         "--profiler-bridge-method",
-        choices=["none", "cooccurrence", "gradient", "auto", "low_degree_structural"],
+        choices=["none", "cooccurrence", "gradient", "auto", "low_degree_structural", "hub_degree_structural", "two_hop_direct"],
         default="none",
         help=(
             "Strategy for selecting profiler bridge items to create 2-hop paths to the target. "
@@ -2074,6 +2130,7 @@ def build_parser() -> argparse.ArgumentParser:
             "'gradient': ranks items by d(score(fake_user,target))/d(w_j) on frozen LightGCN — best for warm/popular targets. "
             "'auto': selects cooccurrence if target ratings < --profiler-bridge-auto-threshold, else gradient. "
             "'low_degree_structural': 2-hop items outside the cluster scored by proximity/sqrt(degree) — avoids degree inflation. "
+            "'hub_degree_structural': 2-hop items scored by proximity/degree — strongly favours high-degree hubs where adding fake edges causes <1% normalisation dilution. "
             "Only effective when --episode-model lightgcn is set."
         ),
     )

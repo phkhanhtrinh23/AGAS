@@ -124,8 +124,14 @@ class AGASEnvironment:
         self.noise_items = self._resolve_noise_items()
         self.competitor_items = self._resolve_competitor_items()
         self.segment_user_ids = self._resolve_segment_users()
+        # Items most frequently co-rated by real segment users (excl. target).
+        # Used as the profiler candidate pool in segment-mimic mode so fake users
+        # organically build profiles resembling real segment users over many rounds.
+        self.segment_profile_items: list[str] = self._resolve_segment_profile_items()
         # Populated by compute_bridge_items() when gradient selection is enabled.
         self.bridge_items: list[str] = []
+        # Populated by compute_flooding_items() when competitor-flood is enabled.
+        self.flooding_items: list[str] = []
 
         self._ensure_target_item_exists()
         self.current_rank, self.total_candidates = self._target_rank()
@@ -225,6 +231,29 @@ class AGASEnvironment:
             users = cluster["user_id"].astype(str).drop_duplicates().head(2_000).tolist()
         return users
 
+    def _resolve_segment_profile_items(self) -> list[str]:
+        """Items most frequently rated by segment users, excluding the target.
+
+        Ranked by how many distinct segment users rated each item — these are
+        the fingerprint items of the segment.  Used as the profiler candidate
+        pool in segment-mimic mode: the profiler probes them over many rounds so
+        each fake user gradually builds a profile that closely resembles a real
+        segment user without mechanically copying any single one.
+        """
+        if self.base_interactions.empty or not self.segment_user_ids:
+            return []
+        df = self.base_interactions.copy()
+        df["item_id"] = df["item_id"].astype(str)
+        df["user_id"] = df["user_id"].astype(str)
+        target = str(self.target_item_id)
+        seg_df = df[
+            df["user_id"].isin(self.segment_user_ids) & (df["item_id"] != target)
+        ]
+        if seg_df.empty:
+            return []
+        freq = seg_df.groupby("item_id")["user_id"].nunique().sort_values(ascending=False)
+        return freq.index.astype(str).tolist()[:200]
+
     def _ensure_target_item_exists(self) -> None:
         """Inject anchor interactions if target item is absent from historical data.
 
@@ -300,7 +329,17 @@ class AGASEnvironment:
             print(f"Auto bridge method: target has {target_ratings} ratings → using {method}")
 
         try:
-            if method == "low_degree_structural":
+            if method == "two_hop_direct":
+                self.bridge_items = self._compute_bridge_items_two_hop_direct(
+                    target_item_id=self.target_item_id,
+                    n=n,
+                )
+            elif method == "hub_degree_structural":
+                self.bridge_items = self._compute_bridge_items_hub_degree_structural(
+                    target_item_id=self.target_item_id,
+                    n=n,
+                )
+            elif method == "low_degree_structural":
                 self.bridge_items = self._compute_bridge_items_low_degree_structural(
                     target_item_id=self.target_item_id,
                     n=n,
@@ -333,6 +372,47 @@ class AGASEnvironment:
             self.bridge_items = []
         return self.bridge_items
 
+    def compute_flooding_items(self, n: int = 300) -> list[str]:
+        """Select items ranked above the target by the surrogate for competitor flooding.
+
+        Uses the surrogate's segment-averaged scores to identify items that currently
+        outrank the target.  Snipers rate these at 5.0 to inflate their degrees:
+        under D^{-1/2}AD^{-1/2} normalisation this dilutes all their existing edges,
+        pushing them down so the target rises without being directly touched.
+
+        Args:
+            n: Maximum number of flooding candidates to return.
+
+        Returns:
+            Ordered list of item IDs (best flooding candidates first, i.e. closest
+            above the target in the current surrogate ranking).
+        """
+        try:
+            scores = self.recommender.mean_scores_for_segment(
+                segment_user_ids=self.segment_user_ids,
+            )
+        except Exception:
+            self.flooding_items = []
+            return self.flooding_items
+
+        if not scores:
+            self.flooding_items = []
+            return self.flooding_items
+
+        target = str(self.target_item_id)
+        ordered = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+        target_score = scores.get(target, float("-inf"))
+
+        # Items scoring above the target, ordered nearest-first (so snipers flood
+        # the most dangerous competitors preferentially).
+        above = [
+            item_id for item_id, score in reversed(ordered)
+            if score > target_score and item_id != target
+        ]
+        self.flooding_items = above[:n]
+        print(f"Competitor-flood pool: {len(self.flooding_items)} items ranked above target selected.")
+        return self.flooding_items
+
     def _compute_bridge_items_by_cooccurrence(
         self,
         target_item_id: str,
@@ -359,6 +439,48 @@ class AGASEnvironment:
         seg_df = df[df["user_id"].isin(segment_users) & (df["item_id"] != target)]
         cooc = seg_df.groupby("item_id").size().sort_values(ascending=False)
         return cooc.index.astype(str).tolist()[:n]
+
+    def _compute_bridge_items_two_hop_direct(
+        self,
+        target_item_id: str,
+        n: int = 50,
+    ) -> list[str]:
+        """Select true 2-hop bridge items via ALL target raters, scored by proximity/degree.
+
+        Unlike cooccurrence (which restricts to high-rating segment users), this
+        uses every user who rated the target at any rating.  Each selected item
+        has a direct 3-edge path to the target:
+
+            fake_user → bridge_item → target_rater → target
+
+        This is the shortest possible path for 3-layer LightGCN propagation.
+        Items are scored by (distinct target-raters who also rated them) / degree
+        so high-degree hub items are preferred — adding fake edges to them causes
+        minimal relative degree inflation.
+        """
+        df = self.base_interactions.copy()
+        df["item_id"] = df["item_id"].astype(str)
+        df["user_id"] = df["user_id"].astype(str)
+        target = str(target_item_id)
+
+        # ALL users who rated the target (any rating).
+        all_target_raters: set[str] = set(df.loc[df["item_id"] == target, "user_id"])
+        if not all_target_raters:
+            return []
+
+        # Items those users rated (excluding the target).
+        rater_df = df[df["user_id"].isin(all_target_raters) & (df["item_id"] != target)]
+        if rater_df.empty:
+            return []
+
+        degrees = df.groupby("item_id").size()
+        proximity = rater_df.groupby("item_id")["user_id"].nunique()
+        scores = {
+            item_id: prox / degrees.get(item_id, 1)
+            for item_id, prox in proximity.items()
+        }
+        ranked = sorted(scores.items(), key=lambda x: -x[1])
+        return [item_id for item_id, _ in ranked[:n]]
 
     def _compute_bridge_items_low_degree_structural(
         self,
@@ -406,6 +528,56 @@ class AGASEnvironment:
         ranked = sorted(scores.items(), key=lambda x: -x[1])
         return [item_id for item_id, _ in ranked[:n]]
 
+    def _compute_bridge_items_hub_degree_structural(
+        self,
+        target_item_id: str,
+        positive_threshold: float = 4.0,
+        n: int = 50,
+    ) -> list[str]:
+        """Select 2-hop bridge items scored by proximity / degree (hub-biased).
+
+        Identical graph walk to low_degree_structural but scores items by
+        proximity / degree instead of proximity / sqrt(degree).  This strongly
+        favours high-degree hub items where adding 50 fake edges inflates the
+        item's degree by only a small fraction, preserving the normalised weight
+        of all existing real edges through that hub.  The tradeoff (lower
+        absolute fake-edge weight) is worthwhile because the hub already carries
+        dense structural signal to the target neighbourhood.
+        """
+        df = self.base_interactions.copy()
+        df["item_id"] = df["item_id"].astype(str)
+        df["user_id"] = df["user_id"].astype(str)
+        target = str(target_item_id)
+
+        seg_mask = (df["item_id"] == target) & (df["rating"] >= positive_threshold)
+        segment_users: set[str] = set(df.loc[seg_mask, "user_id"])
+        if not segment_users:
+            segment_users = set(df.loc[df["item_id"] == target, "user_id"])
+        if not segment_users:
+            return []
+
+        cluster_items: set[str] = set(
+            df.loc[df["user_id"].isin(segment_users) & (df["item_id"] != target), "item_id"]
+        )
+        cluster_raters: set[str] = set(df.loc[df["item_id"].isin(cluster_items), "user_id"])
+
+        bridge_df = df[
+            df["user_id"].isin(cluster_raters)
+            & (~df["item_id"].isin(cluster_items))
+            & (df["item_id"] != target)
+        ]
+        if bridge_df.empty:
+            return []
+
+        degrees = df.groupby("item_id").size()
+        proximity = bridge_df.groupby("item_id")["user_id"].nunique()
+        scores = {
+            item_id: prox / degrees.get(item_id, 1)
+            for item_id, prox in proximity.items()
+        }
+        ranked = sorted(scores.items(), key=lambda x: -x[1])
+        return [item_id for item_id, _ in ranked[:n]]
+
     def build_worker_context(self) -> WorkerContext:
         """Expose candidate pools to workers.
 
@@ -420,6 +592,8 @@ class AGASEnvironment:
             competitor_items=self.competitor_items,
             noise_items=self.noise_items,
             bridge_items=self.bridge_items,
+            flooding_items=self.flooding_items,
+            segment_profile_items=self.segment_profile_items,
         )
 
     def observation(
