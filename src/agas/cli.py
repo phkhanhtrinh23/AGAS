@@ -247,6 +247,8 @@ def _build_coordinator_and_workers(
         temperature_end=args.llm_temperature_end,
         total_steps=total_steps,
         precomputed_bridge_items=precomputed_bridge_items or [],
+        min_active_fraction=float(getattr(args, "min_active_fraction", 0.4)),
+        min_sniper_fraction=float(getattr(args, "min_sniper_fraction", 0.0)),
     )
 
     lock_role = AgentRole.INACTIVE
@@ -1529,6 +1531,30 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
             )
             result = runner.run()
             goal_summary = _summarize_goal_status(initial_rank=initial_rank, history=result.history, goal_rank=args.goal_rank)
+
+            # Best-sequence retrain: keep only interactions from rounds 0..t* where
+            # t* is the round that achieved the best rank, then retrain from scratch.
+            # This implements the t* = argmin_t ρ^(t) protocol from the paper.
+            best_step = goal_summary["best_rank_step"]
+            best_seq_rank: int | None = None
+            if best_step is not None and best_step < len(result.history) - 1:
+                best_seq_history = result.history[: best_step + 1]
+                best_seq_rows = _extract_attack_interactions(best_seq_history, roles=attack_roles)
+                best_seq_training = b_base_training
+                if len(best_seq_rows):
+                    best_seq_combined = pd.concat([best_seq_training, best_seq_rows], ignore_index=True)
+                    best_seq_combined = best_seq_combined.drop_duplicates(subset=["user_id", "item_id"], keep="last")
+                else:
+                    best_seq_combined = best_seq_training
+                best_seq_model = _build_target_model(name, target_config)
+                best_seq_model.fit(best_seq_combined, items=items)
+                best_seq_rank, _ = best_seq_model.rank_item(
+                    item_id=target_item_id,
+                    segment_user_ids=segment_user_ids,
+                    candidate_items=candidate_items,
+                )
+                best_seq_rank = int(best_seq_rank)
+
             hr_at_k: dict[str, dict[str, float]] = {}
             ndcg_at_k: dict[str, dict[str, float]] = {}
             for k in metrics_ks:
@@ -1552,6 +1578,7 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 "final_total_candidates": int(result.final_total_candidates),
                 "best_rank": int(goal_summary["best_rank"]),
                 "best_rank_step": goal_summary["best_rank_step"],
+                "best_seq_rank": best_seq_rank,
                 "goal_achieved": bool(goal_summary["goal_achieved"]),
                 "goal_first_reached_step": goal_summary["goal_first_reached_step"],
                 "stopped_early": bool(result.stopped_early),
@@ -1636,7 +1663,9 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
     if option_b_results:
         print("Option B (in-loop target models):")
         for name, stats in option_b_results.items():
-            print(f"  {name}: final rank {stats['final_rank']} (best {stats['best_rank']})")
+            bsr = stats.get("best_seq_rank")
+            bsr_str = f", best-seq retrain rank {bsr}" if bsr is not None else ""
+            print(f"  {name}: final rank {stats['final_rank']} (best in-loop {stats['best_rank']} at step {stats['best_rank_step']}{bsr_str})")
     return 0
 
 
@@ -2014,6 +2043,24 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=5,
         help="Number of flooding items each sniper rates per step (default: 5).",
+    )
+    p_transfer.add_argument(
+        "--min-active-fraction",
+        type=float,
+        default=0.4,
+        help=(
+            "Minimum fraction of agents that must be active (non-inactive) each round. "
+            "Agents below this floor are auto-promoted to camouflageur. Default: 0.4."
+        ),
+    )
+    p_transfer.add_argument(
+        "--min-sniper-fraction",
+        type=float,
+        default=0.0,
+        help=(
+            "Minimum fraction of ACTIVE agents that must be snipers each round (skipped on round 0). "
+            "Active agents below this floor are promoted from camouflageur to sniper. Default: 0.0 (no floor)."
+        ),
     )
     p_transfer.add_argument(
         "--victim-model-hint",

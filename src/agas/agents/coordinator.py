@@ -135,10 +135,10 @@ _VICTIM_COORDINATOR_GUIDANCE: Dict[str, str] = {
         "- Typical progression: steps 0-2 → profiler builds graph proximity; "
         "steps 3+ → mix of sniper (cluster neighbours) and camouflageur; "
         "do NOT stay in warm-up for more than 2-3 consecutive steps.\n"
-        "- AGENT SCALING RULE: You MUST activate at least 80% of agents as profiler, "
-        "camouflageur, or sniper every step. NEVER mark more than 20% of agents as inactive. "
-        "With a large pool (>10 agents), spread roles across many agents — especially deploy "
-        "more snipers once bridge-building is done (step 3+).\n"
+        "- AGENT SCALING RULE: Activate at least 50% of agents every step. "
+        "After step 0, assign at least 30% of active agents as SNIPER — they rate bridge "
+        "items to push the target up via graph diffusion. Do NOT keep snipers at <5% of "
+        "the pool; that wastes the attack budget. Spread snipers broadly across agents.\n"
         "- Camouflaguer is valuable here: cluster ratings build graph proximity without "
         "inflating the target's degree.\n"
         "- Keep total sniper interactions per agent low — graph diffusion accumulates slowly."
@@ -272,6 +272,12 @@ class LLMCoordinatorPolicy:
     # Pre-computed bridge items to inject into the coordinator context.
     # When set, the coordinator is told items are already found and should skip warm-up.
     precomputed_bridge_items: list | None = None
+    # Minimum fraction of agents that must be active (non-inactive) each step.
+    # Agents below this floor are auto-promoted to camouflageur after LLM assignment.
+    min_active_fraction: float = 0.4
+    # Minimum fraction of ACTIVE agents that must be snipers (after step 0).
+    # Active agents below this floor are promoted from camouflageur to sniper.
+    min_sniper_fraction: float = 0.0
 
     def __post_init__(self) -> None:
         """Initialize coordinator prompt store and trace cache."""
@@ -534,11 +540,11 @@ class LLMCoordinatorPolicy:
                 metadata=metadata,
             )
 
-        # Enforce minimum active fraction: at least 80% of agents must be active.
-        # If the LLM left too many inactive, promote extras to camouflaguer.
+        # Enforce minimum active fraction (configurable via min_active_fraction).
+        # If the LLM left too many inactive, promote extras to camouflageur.
         n_total = len(self.agent_order)
         if n_total > 10:
-            min_active = max(1, int(n_total * 0.8))
+            min_active = max(1, int(n_total * self.min_active_fraction))
             active_ids = [
                 aid for aid in self.agent_order
                 if result[aid].role != AgentRole.INACTIVE
@@ -556,6 +562,27 @@ class LLMCoordinatorPolicy:
                         agent_id=aid,
                         role=AgentRole.CAMOUFLAGEUR,
                         rationale="Auto-promoted from inactive to meet minimum active fraction.",
+                    )
+
+        # Enforce minimum sniper fraction among active agents (skipped on step 0
+        # to allow bridge-building warm-up before snipers fire).
+        if step > 0 and self.min_sniper_fraction > 0.0:
+            active_ids = [
+                aid for aid in self.agent_order
+                if result[aid].role != AgentRole.INACTIVE
+            ]
+            sniper_ids = [aid for aid in active_ids if result[aid].role == AgentRole.SNIPER]
+            min_snipers = max(1, int(len(active_ids) * self.min_sniper_fraction))
+            if len(sniper_ids) < min_snipers:
+                # Promote camouflageurs to snipers to meet the floor.
+                camou_ids = [aid for aid in active_ids if result[aid].role == AgentRole.CAMOUFLAGEUR]
+                to_snipe = camou_ids[: min_snipers - len(sniper_ids)]
+                for aid in to_snipe:
+                    result[aid] = RoleAssignment(
+                        step=step,
+                        agent_id=aid,
+                        role=AgentRole.SNIPER,
+                        rationale="Auto-promoted from camouflageur to meet minimum sniper fraction.",
                     )
 
         return result

@@ -207,20 +207,23 @@ Round  2 | ρ = 1212  Δρ = +238   strategy = S3_WARM_UP
 [RQ1] Done. Expected outputs in agent_attack_rs/outputs/rq1_performance
 ```
 
-### Transfer attack against LightGCN (in-loop)
+### Transfer attack against LightGCN (in-loop,)
+
+Runs LightGCN as both the episode model and evaluation target. The victim
+retrains after every round so the Coordinator receives real rank feedback and
+adapts roles and strategy accordingly.
 
 ```bash
 agas run-transfer \
   --dataset ml-latest-small \
   --target-item-id 7114 \
   --target-keyword horror \
-  --num-agents 50 \
-  --num-steps 10 \
+  --num-agents 20 \
+  --num-steps 20 \
   --victim-model-hint lightgcn \
   --profiler-bridge-method cooccurrence \
   --probe-steps 0 \
   --graph-sniper \
-  --clone-segment-users-to-agents \
   --transfer-mode option-b \
   --target-models lightgcn \
   --target-epochs 50 \
@@ -229,7 +232,10 @@ agas run-transfer \
   --output outputs/run_transfer_lightgcn_inloop.json
 ```
 
-`--profiler-bridge-method cooccurrence`: Select bridge items by co-occurrence frequency with the target's rater cluster.
+| Flag | Meaning |
+|---|---|
+| `--profiler-bridge-method cooccurrence` | Bridge items selected by co-occurrence with the target's rater cluster. |
+| `--graph-sniper` | Snipers promote bridge items instead of rating the target directly. |
 
 After the run, results are printed and saved to the output JSON:
 
