@@ -751,15 +751,11 @@ class WorkerAgent:
             return list(dict.fromkeys(focus)), self.config.camouflaguer_actions
         if role == AgentRole.SNIPER:
             if self.config.graph_sniper:
-                # LightGCN mode: rate cluster-neighbour/bridge items at 5.0 to build
-                # 2-hop paths; never include the target (direct edges inflate its degree).
                 neighbor_pool = list(ctx.bridge_items) or [
                     i for i in ctx.target_cluster_items if str(i) != str(ctx.target_item_id)
                 ]
                 neighbor_pool = [i for i in neighbor_pool if str(i) != str(ctx.target_item_id)]
                 if self.config.competitor_flood and ctx.flooding_items:
-                    # Asymmetric flood: rate items ranked above the target at 5.0 to inflate
-                    # their degrees and dilute their edges, pushing them down so the target rises.
                     flood_pool = [i for i in ctx.flooding_items if str(i) != str(ctx.target_item_id)]
                     max_n = self.config.graph_sniper_neighbor_actions + self.config.competitor_flood_actions
                     focus = list(dict.fromkeys(
@@ -770,6 +766,9 @@ class WorkerAgent:
                     competitor_pool = list(ctx.competitor_items[:10])
                     max_n = self.config.graph_sniper_neighbor_actions + self.config.sniper_competitor_actions
                     focus = list(dict.fromkeys(neighbor_pool[:self.config.graph_sniper_neighbor_actions * 4] + competitor_pool))
+                if self.config.graph_sniper_include_target:
+                    focus = list(dict.fromkeys([str(ctx.target_item_id)] + focus))
+                    max_n += 1
                 return focus, max_n
             focus = [str(ctx.target_item_id)] + list(ctx.competitor_items[:10])
             return list(dict.fromkeys(focus)), 1 + self.config.sniper_competitor_actions

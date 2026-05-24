@@ -207,7 +207,7 @@ Round  2 | ρ = 1212  Δρ = +238   strategy = S3_WARM_UP
 [RQ1] Done. Expected outputs in agent_attack_rs/outputs/rq1_performance
 ```
 
-### Transfer attack against LightGCN (in-loop,)
+### Transfer attack against LightGCN (in-loop)
 
 Runs LightGCN as both the episode model and evaluation target. The victim
 retrains after every round so the Coordinator receives real rank feedback and
@@ -218,31 +218,36 @@ agas run-transfer \
   --dataset ml-latest-small \
   --target-item-id 7114 \
   --target-keyword horror \
-  --num-agents 20 \
-  --num-steps 20 \
+  --num-agents 50 \
+  --num-steps 10 \
   --victim-model-hint lightgcn \
   --profiler-bridge-method cooccurrence \
   --probe-steps 0 \
   --graph-sniper \
+  --clone-segment-users-to-agents \
   --transfer-mode option-b \
   --target-models lightgcn \
   --target-epochs 50 \
   --target-embedding-dim 32 \
   --target-lightgcn-layers 3 \
-  --output outputs/run_transfer_lightgcn_inloop.json
+  --min-active-fraction 0.5 \
+  --min-sniper-fraction 0.3 \
+  --output outputs/optb_warmstart_clean_cooc.json
 ```
 
 | Flag | Meaning |
 |---|---|
 | `--profiler-bridge-method cooccurrence` | Bridge items selected by co-occurrence with the target's rater cluster. |
-| `--graph-sniper` | Snipers promote bridge items instead of rating the target directly. |
+| `--graph-sniper` | Snipers rate bridge items **and** the target directly (dual action). |
 
 After the run, results are printed and saved to the output JSON:
 
 ```
-Transfer evaluation saved to outputs/run_transfer_lightgcn_inloop.json
+Bridge-item selection (cooccurrence): 50 items selected for profiler pool.
+...
+Transfer evaluation saved to outputs/optb_warmstart_clean_cooc.json
 Option B (in-loop target models):
-  lightgcn: final rank <final> (best <best>)
+  lightgcn: final rank <final> (best in-loop <best> at step <step>, best-seq retrain rank <bsr>)
 ```
 
 ## 6. Token logging, role activation & strategy tracking

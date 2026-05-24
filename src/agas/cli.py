@@ -508,13 +508,15 @@ def _clone_segment_profiles_for_agents(
     *,
     seed: int,
     exclude_item_id: str | None = None,
+    exclude_item_ids: set[str] | None = None,
 ) -> tuple[pd.DataFrame, dict[str, str]]:
     """Clone real-user profiles onto fake agent IDs for offline training.
 
     Copies each segment user's full interaction history onto a fake agent ID,
     giving the fake user warm-started graph connections for LightGCN.
-    The target item is excluded from all cloned rows to avoid inflating its
-    degree and diluting its D^{-1/2}AD^{-1/2} edge weights.
+    The target item and any items in exclude_item_ids (bridge items, cluster items)
+    are excluded from all cloned rows to avoid inflating their degrees and diluting
+    the D^{-1/2}AD^{-1/2} edge weights on the attack path.
 
     Returns cloned interaction rows and a mapping of fake_agent_id -> source_user_id.
     """
@@ -529,13 +531,19 @@ def _clone_segment_profiles_for_agents(
     rng.shuffle(src_users)
     mapping = dict(zip(agent_ids, src_users[: len(agent_ids)]))
 
+    all_excluded: set[str] = set()
+    if exclude_item_id is not None:
+        all_excluded.add(str(exclude_item_id))
+    if exclude_item_ids:
+        all_excluded.update(str(i) for i in exclude_item_ids)
+
     frames: list[pd.DataFrame] = []
     user_col = interactions["user_id"].astype(str)
     item_col = interactions["item_id"].astype(str)
     for agent_id, src_user in mapping.items():
         src_mask = user_col == str(src_user)
-        if exclude_item_id is not None:
-            src_mask = src_mask & (item_col != str(exclude_item_id))
+        if all_excluded:
+            src_mask = src_mask & (~item_col.isin(all_excluded))
         if not src_mask.any():
             continue
         clone = interactions[src_mask].copy()
@@ -1211,15 +1219,9 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
             agent_ids = list(segment_user_ids[:args.num_agents])
         else:
             agent_ids = default_agent_ids(args.num_agents)
-            if clone_profiles:
-                cloned_rows, clone_mapping = _clone_segment_profiles_for_agents(
-                    interactions,
-                    agent_ids,
-                    segment_user_ids,
-                    seed=args.seed,
-                    exclude_item_id=target_item_id,
-                )
 
+        # Compute bridge items BEFORE cloning so we can exclude them from warmstart,
+        # preventing degree inflation on the attack path (bridge + cluster items).
         bridge_method = getattr(args, "profiler_bridge_method", "none")
         if bridge_method in ("cooccurrence", "gradient", "auto", "low_degree_structural", "hub_degree_structural", "two_hop_direct"):
             n_bridge = max(50, int(getattr(args, "profiler_actions", 3)) * 4)
@@ -1236,6 +1238,20 @@ def cmd_run_transfer(args: argparse.Namespace) -> int:
                 print(f"Gradient bridge-item selection: {n_found} items selected for profiler pool.")
             else:
                 print("Gradient bridge-item selection: episode model is not LightGCN or not yet fitted — falling back to cluster/benchmark items.")
+
+        if not use_segment_users and clone_profiles:
+            # Exclude target + bridge items + target cluster items to avoid inflating
+            # degrees on the attack path during warmstart.
+            warmstart_exclude = set(base_env.bridge_items) | set(str(i) for i in base_env.target_cluster_item_ids)
+            cloned_rows, clone_mapping = _clone_segment_profiles_for_agents(
+                interactions,
+                agent_ids,
+                segment_user_ids,
+                seed=args.seed,
+                exclude_item_id=target_item_id,
+                exclude_item_ids=warmstart_exclude,
+            )
+            print(f"Warmstart clone: {len(cloned_rows)} rows (excluded {len(warmstart_exclude)} bridge/cluster items).")
 
         if bool(getattr(args, "competitor_flood", False)):
             n_flood = int(getattr(args, "competitor_flood_size", 300))
