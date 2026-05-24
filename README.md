@@ -232,7 +232,8 @@ agas run-transfer \
   --target-lightgcn-layers 3 \
   --min-active-fraction 0.5 \
   --min-sniper-fraction 0.3 \
-  --output outputs/optb_warmstart_clean_cooc.json
+  --output outputs/optb_warmstart_clean_cooc_50ag_10r.json
+
 ```
 
 | Flag | Meaning |
