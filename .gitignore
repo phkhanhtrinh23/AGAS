@@ -17,6 +17,7 @@ processed/
 /data/
 
 *.lock
+*.egg-info/
 
 pdfs/
 outputs/
