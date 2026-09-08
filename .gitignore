@@ -20,3 +20,5 @@ processed/
 
 pdfs/
 outputs/
+
+.DS_Store
