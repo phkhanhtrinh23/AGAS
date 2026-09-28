@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Dict, List, Sequence
 
@@ -52,6 +53,8 @@ class EpisodeResult:
     profile_validator_scores: Dict[str, Dict[str, float]] = field(default_factory=dict)
     embedding_cluster_metrics: dict | None = None
     """Victim-side embedding cluster anomaly metrics. Not fed back to AGAS agents."""
+    runtime_sec: float = 0.0
+    """Total wall-clock seconds for the episode loop (efficiency figures)."""
 
     @property
     def final_target_rank(self) -> int:
@@ -260,7 +263,9 @@ class AGASEpisodeRunner:
                 embedding_cluster_metrics=None,
             )
 
+        loop_start = time.perf_counter()
         for step in range(self.config.num_steps):
+            step_start = time.perf_counter()
             worker_states: Dict[str, WorkerState] = {aid: worker.state for aid, worker in self.workers.items()}
             state_before = self._state_snapshot()
             trajectory_summary = self._trajectory_summary(history)
@@ -344,6 +349,8 @@ class AGASEpisodeRunner:
                     "coordinator_runtime_trace": coordinator_runtime_trace,
                     "state_before": state_before,
                     "state_after": state_after,
+                    "elapsed_sec": float(time.perf_counter() - step_start),
+                    "cumulative_sec": float(time.perf_counter() - loop_start),
                 }
             )
 
@@ -375,6 +382,7 @@ class AGASEpisodeRunner:
             stop_reason=stop_reason,
             profile_validator_scores=final_scores,
             embedding_cluster_metrics=ecm.to_dict() if ecm is not None else None,
+            runtime_sec=float(time.perf_counter() - loop_start),
         )
 
 

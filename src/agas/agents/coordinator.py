@@ -153,6 +153,34 @@ _VICTIM_COORDINATOR_GUIDANCE: Dict[str, str] = {
 }
 
 
+def normalize_disabled_strategies(raw) -> "set[str]":
+    """Turn a ``--disable-strategies`` value into a set of Strategy enum values.
+
+    Accepts short symbols ``s1``..``s8`` or full names such as
+    ``S5_SILENT_SLOWDOWN`` (case-insensitive), a comma string or an iterable.
+    Returns canonical values like ``{"S5_SILENT_SLOWDOWN"}``.
+    """
+
+    if not raw:
+        return set()
+    tokens = raw if isinstance(raw, (set, list, tuple)) else str(raw).split(",")
+    order = Strategy.all()  # S1..S8 in paper order
+    short = {f"s{i+1}": s.value for i, s in enumerate(order)}
+    names = {s.value.lower(): s.value for s in order}
+    out: set[str] = set()
+    for tok in tokens:
+        t = str(tok).strip().lower()
+        if not t or t in {"none", "null"}:
+            continue
+        if t in short:
+            out.add(short[t])
+        elif t in names:
+            out.add(names[t])
+        else:
+            raise ValueError(f"Unknown strategy in disable-strategies: {tok!r} (use s1..s8)")
+    return out
+
+
 def _infer_strategy(
     observation: CoordinatorObservation,
     assignments: Dict[str, RoleAssignment],
@@ -278,12 +306,16 @@ class LLMCoordinatorPolicy:
     # Minimum fraction of ACTIVE agents that must be snipers (after step 0).
     # Active agents below this floor are promoted from camouflageur to sniper.
     min_sniper_fraction: float = 0.0
+    # Strategies the coordinator must NOT choose (RQ4 "w/o S3/S4/S5/S8"). Set by
+    # the Coordinator each round; shown to the LLM so it avoids them.
+    disabled_strategies: "set[str] | None" = None
 
     def __post_init__(self) -> None:
         """Initialize coordinator prompt store and trace cache."""
 
         self.prompt_store = self.prompt_store or PromptStore()
         self.last_trace: Dict[str, Any] | None = None
+        self.disabled_strategies = set(self.disabled_strategies or set())
         self._unified_memory = None  # type: ignore[assignment]
         self._token_totals: Dict[str, int] = {
             "prompt_tokens": 0,
@@ -486,6 +518,12 @@ class LLMCoordinatorPolicy:
         if self._unified_memory is not None:
             state_blob["unified_memory"] = self._unified_memory.snapshot()
             state_blob["memory_mode"] = "unified"
+        if self.disabled_strategies:
+            state_blob["disabled_strategies"] = sorted(self.disabled_strategies)
+            state_blob["disabled_strategies_note"] = (
+                "These strategies are ablated for this run. Do NOT use them. "
+                "Choose your role assignment as if they were unavailable."
+            )
         return json.dumps(state_blob, indent=2)
 
     def _parse_assignments(self, text: str, step: int) -> Dict[str, RoleAssignment]:
@@ -588,6 +626,47 @@ class LLMCoordinatorPolicy:
         return result
 
 
+@dataclass
+class RandomCoordinatorPolicy:
+    """Assigns roles uniformly at random (RQ4 ``w/o Coordinator`` ablation).
+
+    This replaces the LLM Coordinator with pure chance, so every worker gets a
+    random role each round. It exposes the same attributes the Coordinator syncs
+    (``victim_model_class``, ``_probe_phase_done``, ``disabled_strategies``,
+    ``last_trace``, ``_token_totals``) so it is a drop-in policy.
+    """
+
+    agent_order: Sequence[str]
+    seed: int = 42
+
+    def __post_init__(self) -> None:
+        import random as _random
+
+        self._rng = _random.Random(self.seed)
+        self.victim_model_class = VictimModelClass.UNKNOWN.value
+        self._probe_phase_done = True
+        self.disabled_strategies: set[str] = set()
+        self.last_trace: Dict[str, Any] = {"strategy": "random"}
+        self._token_totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+    def assign(
+        self,
+        observation: CoordinatorObservation,
+        worker_states: Dict[str, WorkerState],
+    ) -> Dict[str, RoleAssignment]:
+        roles = [AgentRole.PROFILER, AgentRole.SNIPER, AgentRole.CAMOUFLAGEUR, AgentRole.INACTIVE]
+        out: Dict[str, RoleAssignment] = {}
+        for aid in self.agent_order:
+            out[aid] = RoleAssignment(
+                step=observation.step,
+                agent_id=aid,
+                role=self._rng.choice(roles),
+                rationale="Random role (w/o Coordinator ablation).",
+            )
+        self.last_trace = {"strategy": "random"}
+        return out
+
+
 class Coordinator:
     """Coordinator orchestrating role assignments each step."""
 
@@ -600,6 +679,9 @@ class Coordinator:
         probe_repeats: int = 1,
         probe_use_graph: bool = False,
         probe_consensus: bool = False,
+        disabled_roles: "set[AgentRole] | None" = None,
+        disabled_strategies=None,
+        disable_signals: bool = False,
     ):
         """Store the selected assignment policy implementation.
 
@@ -652,6 +734,42 @@ class Coordinator:
         self._cooccurrence_bridging_method: str | None = None
         self._cooccurrence_bridging_enabled: bool = True
 
+        # ROLE ABLATION (RQ4 "w/o <role>" heatmap rows). Any role in this set is
+        # never assigned: it is remapped to a benign fallback so that removing the
+        # role removes its capability without silencing the whole pool.
+        #   PR -> CA  (no probing / bridge discovery, still safe filler activity)
+        #   SN -> CA  (no targeted payload)
+        #   CA -> IN  (no benign filler padding)
+        #   IN -> CA  (all workers always act)
+        self._disabled_roles: set[AgentRole] = set(disabled_roles or set())
+        self._role_ablation_fallback: dict[AgentRole, AgentRole] = {
+            AgentRole.PROFILER: AgentRole.CAMOUFLAGEUR,
+            AgentRole.SNIPER: AgentRole.CAMOUFLAGEUR,
+            AgentRole.CAMOUFLAGEUR: AgentRole.INACTIVE,
+            AgentRole.INACTIVE: AgentRole.CAMOUFLAGEUR,
+        }
+
+        # STRATEGY ABLATION (RQ4 "w/o S1..S8" heatmap rows). Four strategies are
+        # backed by deterministic code, so we gate them directly here:
+        #   S1 Victim Probe    -> skip the probe/classify phase
+        #   S2 Bridge Building -> disable the co-occurrence bridging overlay
+        #   S6 Profile Cleanup -> skip the validator guardrail
+        #   S7 Safe Replacement-> disable the suspicion lockout
+        # The other four (S3 Warm-up, S4 First Push, S5 Silent Slowdown,
+        # S8 Main Attack) are emergent LLM behaviours: they are removed from the
+        # strategy list shown to the coordinator prompt instead (see the policy).
+        self._disabled_strategies: set[str] = normalize_disabled_strategies(disabled_strategies)
+        if Strategy.S1_VICTIM_PROBE.value in self._disabled_strategies:
+            self._probe_steps = 0
+            self._probe_phase_done = True
+        if Strategy.S7_SAFE_REPLACEMENT.value in self._disabled_strategies:
+            self.runtime_config.enable_suspicion_lockout = False
+
+        # SIGNAL ABLATION (RQ4 "w/o Signals"): when True, the engineered worker
+        # and environment signals are blanked before the policy sees them. The raw
+        # target rank is kept so the goal check and probe still function.
+        self._disable_signals: bool = bool(disable_signals)
+
         # Auto-attach so policies can call back for PROBE_CLASSIFY
         # without requiring separate ``attach_coordinator`` plumbing.
         if hasattr(self.policy, "attach_coordinator"):
@@ -693,6 +811,7 @@ class Coordinator:
         if (
             not self._cooccurrence_bridging_enabled
             or not self._cooccurrence_bridging_method
+            or Strategy.S2_BRIDGE_BUILDING.value in self._disabled_strategies  # RQ4 w/o S2
         ):
             return assignments
         method = self._cooccurrence_bridging_method
@@ -799,6 +918,60 @@ class Coordinator:
                     ),
                 )
         return assignments
+
+    @staticmethod
+    def _neutralize_signals(observation: CoordinatorObservation) -> CoordinatorObservation:
+        """Return a copy of the observation with the engineered signals blanked.
+
+        Used for the RQ4 ``w/o Signals`` ablation. Trust, risk, validator,
+        suppression, acceptance, alerts, lockdown, and the rolling memory are all
+        removed. The raw target rank and total candidates are kept so the goal
+        check and any probe still work.
+        """
+
+        import dataclasses
+
+        return dataclasses.replace(
+            observation,
+            target_rank_delta=0,
+            trajectory_summary=None,
+            agent_memory_by_agent={},
+            alerts_by_agent={},
+            trust_by_agent={},
+            risk_by_agent={},
+            signals_by_agent={},
+            lockdown_active=False,
+            notes=None,
+        )
+
+    def _apply_role_ablation(
+        self, assignments: Dict[str, RoleAssignment]
+    ) -> Dict[str, RoleAssignment]:
+        """Remove disabled roles by remapping them to a benign fallback.
+
+        Used for the RQ4 ``w/o <role>`` ablation. A worker that the policy put in
+        a disabled role is rewritten to the fallback role
+        (:data:`_role_ablation_fallback`) so the ablated capability disappears
+        while the rest of the campaign keeps running. Diagnostic probe
+        assignments are left untouched.
+        """
+
+        if not self._disabled_roles:
+            return assignments
+        adjusted: Dict[str, RoleAssignment] = {}
+        for aid, a in assignments.items():
+            if a.metadata.get("diagnostic_type") or a.role not in self._disabled_roles:
+                adjusted[aid] = a
+                continue
+            new_role = self._role_ablation_fallback.get(a.role, AgentRole.INACTIVE)
+            adjusted[aid] = RoleAssignment(
+                step=a.step,
+                agent_id=aid,
+                role=new_role,
+                rationale=f"Role {a.role.value} ablated (--disable-roles); remapped to {new_role.value}.",
+                metadata=dict(a.metadata),
+            )
+        return adjusted
 
     def _apply_lockouts(
         self,
@@ -1190,12 +1363,20 @@ class Coordinator:
             A mapping from agent ID to role assignment for the step.
         """
 
+        # w/o Signals: blank the engineered signals before anyone reads them.
+        if self._disable_signals:
+            observation = self._neutralize_signals(observation)
+
         # Keep the policy in sync with the latest detected model class
         # and probe phase state before it dispatches.
         if hasattr(self.policy, "victim_model_class"):
             self.policy.victim_model_class = self.victim_model_class.value
         if hasattr(self.policy, "_probe_phase_done"):
             self.policy._probe_phase_done = self._probe_phase_done
+        # Tell the policy which strategies are off, so the LLM prompt can drop
+        # the emergent ones (S3/S4/S5/S8) from the allowed list.
+        if hasattr(self.policy, "disabled_strategies"):
+            self.policy.disabled_strategies = set(self._disabled_strategies)
 
         # Priority 1 — PROBE_CLASSIFY. Coordinator drives the probe directly
         # so the state machine advances before the LLM policy dispatches.
@@ -1224,11 +1405,13 @@ class Coordinator:
 
         # Exploit phase overlays.
         self._update_sniper_lockouts(observation)
-        assignments = self._apply_lockouts(observation, assignments)  # SUSPICION_LOCKOUT
-        assignments = self._apply_validator_guardrail(observation, assignments)  # VALIDATOR_GUARDRAIL
+        assignments = self._apply_lockouts(observation, assignments)  # SUSPICION_LOCKOUT (gated by S7)
+        if Strategy.S6_PROFILE_CLEANUP.value not in self._disabled_strategies:  # RQ4 w/o S6
+            assignments = self._apply_validator_guardrail(observation, assignments)  # VALIDATOR_GUARDRAIL
         assignments = self._ensure_profiler_presence(observation, worker_states, assignments)
         assignments = self._apply_cooccurrence_bridging(assignments)  # COOCCURRENCE_BRIDGING
         assignments = self._annotate_victim_class(assignments)
+        assignments = self._apply_role_ablation(assignments)  # RQ4 w/o <role>
         self._last_assignments = assignments
         self.last_runtime_trace = {
             "sniper_lockouts": dict(self._sniper_lockouts),

@@ -147,6 +147,52 @@ def _parse_args() -> argparse.Namespace:
         default=os.environ.get("OPENAI_MODEL", "gpt-5.1"),
         help="LLM model identifier (default: $OPENAI_MODEL or gpt-5.1).",
     )
+    # ---- RQ4 ablation pass-throughs (forwarded verbatim to `agas.cli run-episode`) ----
+    parser.add_argument(
+        "--disable-roles",
+        type=str,
+        default=None,
+        help="Ablate roles, e.g. 'sn' for w/o Sniper or 'pr' for w/o Profiler "
+             "(comma-separated: pr,sn,ca,in).",
+    )
+    parser.add_argument(
+        "--disable-strategies",
+        type=str,
+        default=None,
+        help="Ablate strategies, e.g. 's5' for w/o Silent Slowdown "
+             "(comma-separated: s1..s8).",
+    )
+    parser.add_argument(
+        "--random-coordinator",
+        action="store_true",
+        default=False,
+        help="w/o Coordinator: random role assignment instead of the LLM.",
+    )
+    parser.add_argument(
+        "--disable-signals",
+        action="store_true",
+        default=False,
+        help="w/o Signals: blank the engineered signals before the Coordinator.",
+    )
+    parser.add_argument(
+        "--worker-llm-model",
+        type=str,
+        default=None,
+        help="Backbone for the workers (size axis of the ablation heatmap). "
+             "Defaults to --model.",
+    )
+    parser.add_argument(
+        "--coordinator-agent-memory",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Turn the coordinator cross-round memory on/off (w/o Memory row).",
+    )
+    parser.add_argument(
+        "--profile-validator",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Turn the ProfileValidator guardrail on/off.",
+    )
     return parser.parse_args()
 
 
@@ -183,6 +229,27 @@ def main(argv: list[str] | None = None) -> int:
     ]
     if args.target_item_id:
         cli_argv.extend(["--target-item-id", str(args.target_item_id)])
+
+    # Forward the RQ4 ablation flags when the user set them.
+    if args.disable_roles:
+        cli_argv.extend(["--disable-roles", str(args.disable_roles)])
+    if args.disable_strategies:
+        cli_argv.extend(["--disable-strategies", str(args.disable_strategies)])
+    if args.random_coordinator:
+        cli_argv.append("--random-coordinator")
+    if args.disable_signals:
+        cli_argv.append("--disable-signals")
+    if args.worker_llm_model:
+        cli_argv.extend(["--worker-llm-model", str(args.worker_llm_model)])
+    if args.coordinator_agent_memory is not None:
+        cli_argv.append(
+            "--coordinator-agent-memory" if args.coordinator_agent_memory
+            else "--no-coordinator-agent-memory"
+        )
+    if args.profile_validator is not None:
+        cli_argv.append(
+            "--profile-validator" if args.profile_validator else "--no-profile-validator"
+        )
 
     # Inject budget L as a CLI hint (legacy CLI uses --rule-max-snipers / etc.,
     # but we pass it through via env var so downstream tooling can pick it up).

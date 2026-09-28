@@ -1,0 +1,1366 @@
+\documentclass[11pt]{article}
+\usepackage{amsmath,amssymb,amsthm,bm}
+\usepackage[margin=1in]{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{longtable}
+
+% Allow inline code identifiers to break at these characters so long
+% file/function names never overrun their table column.
+\makeatletter
+\g@addto@macro\UrlBreaks{\do\_\do\:\do\-}
+\makeatother
+
+\definecolor{codebg}{RGB}{247,247,247}
+\definecolor{codekw}{RGB}{0,0,160}
+\definecolor{codecm}{RGB}{110,110,110}
+\definecolor{codestr}{RGB}{160,0,0}
+
+\lstset{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  frame=single,
+  backgroundcolor=\color{codebg},
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  keywordstyle=\color{codekw},
+  commentstyle=\color{codecm}\itshape,
+  stringstyle=\color{codestr},
+  xleftmargin=0.5em,
+  framexleftmargin=0.5em
+}
+% Inline code with literal underscores/slashes: \code|run_agas.py|
+% Uses url's \path so long identifiers break instead of overrunning columns.
+\urlstyle{tt}
+\newcommand{\code}{\path}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}[theorem]{Lemma}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{corollary}[theorem]{Corollary}
+\theoremstyle{definition}
+\newtheorem{definition}[theorem]{Definition}
+\newtheorem{remark}[theorem]{Remark}
+\newtheorem{example}[theorem]{Example}
+
+\title{Attacking Recommender Systems with Agentic AI:\\
+An Adaptive, Role-Switching Group Shilling Attack\\
+\large A step-by-step walkthrough, from first principles to the code and the figures}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+This document explains the system in this code folder (\code|agent_attack_rs|)
+from the very beginning. It assumes you know nothing. The code is the engine
+behind the paper \emph{``An Efficient and Effective Agentic Group Shilling Attack
+on Recommender Systems''} (AGAS). The compiled paper is \texttt{../main.pdf}.
+
+The goal of the system is simple to state. We want to make one chosen item, the
+\textbf{target item}, show up in the recommendation lists of ordinary users. We do
+this by adding a small number of \textbf{fake users} to a recommender. What is new
+is \emph{how} those fake users behave. A central \textbf{Coordinator}, which is a
+language-model agent, watches how the platform reacts. Every round it does two
+things. First it picks one \textbf{strategy}. Then it gives each fake user a
+\textbf{role} out of four. The four roles are Profiler, Sniper, Camouflageur, and
+Inactive. The roles change from round to round, and the strategy adapts when the
+platform pushes back. Because of this the fake activity never settles into the
+fixed pattern that detectors look for.
+
+The document goes from the lowest level to the highest. We start with what a
+recommender and a shilling attack even are (Part~I). We then look at the smallest
+possible action, one fake rating (Part~II). We build up to one fake user with a
+role (Part~III), then the signals the Coordinator reads (Part~IV), then the
+Coordinator and its eight strategies (Part~V), then the victim models and how a
+rank is measured (Part~VI), then the round loop that ties it all together
+(Part~VII), and then the full command-line pipeline (Part~VIII). Part~IX shows how
+the many output files turn into the single numbers printed in the paper. Part~X is
+the reproduction guide. For every picture in \texttt{main.pdf} it says what the
+picture shows, which command makes the numbers, and which script draws it. Part~XI
+collects every equation and every file in one place.
+
+Every symbol is defined before it is used. Every idea is tied to the exact file
+and function that implements it. That way a new reader can trace ``paper to code''
+without guessing.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+
+%======================================================================
+\part*{Part I --- The problem, stated from nothing}
+\addcontentsline{toc}{part}{Part I --- The problem, stated from nothing}
+
+\section{What a recommender system is}
+
+A recommender system watches what each user interacts with. It then tries to guess
+what else that user would like. Write $\mathcal{U}=\{1,\dots,M\}$ for the users and
+$\mathcal{I}=\{1,\dots,N\}$ for the items. The only thing we record is a big table
+of zeros and ones,
+\[
+\mathbf{R}\in\{0,1\}^{M\times N},\qquad
+R_{ui}=\begin{cases}1 & \text{user $u$ interacted with item $i$},\\ 0 & \text{otherwise.}\end{cases}
+\]
+This is called \textbf{implicit feedback}. We do not need star ratings. We only
+need to know that an interaction happened. In this code the table is a pandas
+\code|DataFrame| with three columns, \code|user_id|, \code|item_id|, and
+\code|rating|. It is loaded and cleaned in
+\code|src/agas/cli.py::_load_processed_tables|.
+
+The recommender learns a scoring function $\hat{y}_{ui}=f_\Theta(u,i)$. This
+function gives one real number for every pair of a user and an item. To make a
+recommendation, it takes the items a user has not seen yet, sorts them by that
+score, and returns the top ones:
+\begin{equation}
+\mathrm{TopK}(u)=\operatorname*{arg\,topK}_{q\in\mathcal{I}\setminus\mathcal{I}^{+}_u}\hat{y}_{uq},
+\qquad
+\mathcal{I}^{+}_u=\{i: R_{ui}=1\}.
+\label{eq:topk}
+\end{equation}
+Here $\mathcal{I}^{+}_u$ is the set of items that user $u$ already interacted with.
+This is Eq.~(topk\_def) in the paper's \texttt{formulation.tex}.
+
+\begin{remark}[Which $f_\Theta$?]
+The code has eleven concrete choices of $f_\Theta$. They include matrix
+factorisation, neural collaborative filtering, and graph networks. They all live
+under \code|src/agas/recsys/targets/|. There is also a fast lightweight surrogate
+in \code|src/agas/recsys/surrogate.py| for the inner loop. We return to all of
+these in Part~VI. For now, think of $f_\Theta$ as a black box that scores items.
+\end{remark}
+
+\section{What a shilling attack is}
+
+A \textbf{shilling attack} is also called profile injection, or poisoning. The
+idea is this. An attacker creates fake accounts and gives them fake interaction
+histories. The recommender then retrains on this polluted data. After retraining,
+one chosen \emph{target item} $i_{\mathrm{tar}}$ is recommended to more real users
+than it deserves.
+
+We can write this down. The attacker adds $M_f$ fake users. Each fake user $w$ has
+its own interaction vector $\tilde{\mathbf{r}}_w\in\{0,1\}^N$. Stack these vectors
+into a matrix $\tilde{\mathbf{R}}\in\{0,1\}^{M_f\times N}$. Then place that matrix
+below the clean table:
+\begin{equation}
+\mathbf{R}'=[\mathbf{R};\,\tilde{\mathbf{R}}].
+\label{eq:poison}
+\end{equation}
+This is Eq.~(poison\_append) in \texttt{formulation.tex}. In the code the
+``placing below'' is just \code|pd.concat| followed by a refit. See
+\code|src/agas/recsys/surrogate.py::append_interactions| and
+\code|src/agas/recsys/targets/base.py::append_interactions|.
+
+\section{How we measure success}
+
+We measure success on a set of ordinary \emph{test} users
+$\mathcal{U}_{\mathrm{test}}$. These are real users, and the attack never touches
+them. The main question is a hit rate. Does the target item appear in a test
+user's top-$K$ list?
+\begin{equation}
+\mathrm{HR}@K(i_{\mathrm{tar}})=\frac{1}{|\mathcal{U}_{\mathrm{test}}|}
+\sum_{u\in\mathcal{U}_{\mathrm{test}}}\mathbb{I}\!\left[i_{\mathrm{tar}}\in\mathrm{TopK}(u)\right].
+\label{eq:hr}
+\end{equation}
+There is also a rank-weighted version, NDCG@$K$. It gives more credit when the
+item lands near the very top of the list:
+\begin{equation}
+\mathrm{NDCG}@K=\frac{1}{|\mathcal{U}_{\mathrm{test}}|}\sum_{u\in\mathcal{U}_{\mathrm{test}}}
+\frac{\mathbb{I}[i_{\mathrm{tar}}\in\mathrm{TopK}(u)]}{\log_2(\operatorname{rank}(i_{\mathrm{tar}}\mid u)+1)}.
+\label{eq:ndcg}
+\end{equation}
+These two are Eqs.~(hr\_k) and (ndcg\_k) in \texttt{experiment.tex}.
+
+There is one more metric. It is used to check that the attack stays \emph{clean}.
+It is Rec@$K$, the hit rate of the test users' \emph{own} held-out items:
+\begin{equation}
+\mathrm{Rec}@K=\frac{1}{|\mathcal{U}_{\mathrm{test}}|}\sum_{u\in\mathcal{U}_{\mathrm{test}}}
+\mathbb{I}\!\left[i^{\mathrm{test}}_u\in\mathrm{TopK}(u)\right],
+\label{eq:recK}
+\end{equation}
+where $i^{\mathrm{test}}_u$ is the item we hid from user $u$ for testing. This is
+Eq.~(recK) in \texttt{experiment.tex}. The idea is easy. If Rec@$K$ barely drops
+after the attack, then the recommender still serves real users well. That means
+the attack did not visibly break the system.
+
+\begin{remark}[A single-item shortcut used inside the code]
+Equations~\eqref{eq:hr} and \eqref{eq:ndcg} average over many test users. That is
+expensive to compute after every round. So inside the simulation the code uses a
+cheaper stand-in. It tracks the \emph{mean rank of the target item} over a group
+of receptive real users. It then turns one rank into HR and NDCG with a short
+formula:
+\begin{equation}
+\mathrm{HR}@K=\mathbb{I}[\text{rank}\le K],\qquad
+\mathrm{NDCG}@K=\frac{\mathbb{I}[\text{rank}\le K]}{\log_2(\text{rank}+1)}.
+\label{eq:rank2hrndcg}
+\end{equation}
+This lives in \code|src/agas/cli.py::_rank_to_hr_ndcg|. Rank is the thing the
+Coordinator can actually watch round by round, so it is the internal signal. The
+HR and NDCG in the paper's big tables are the full averages of \eqref{eq:hr} and
+\eqref{eq:ndcg}. We come back to this point in Part~IX because it matters when you
+reproduce the numbers.
+\end{remark}
+
+\section{The threat model and the objective}
+
+The attacker is \textbf{black-box}. It cannot see the victim's parameters, its
+gradients, or its training code. It cannot see which users are test users, and it
+cannot see their held-out items. All it sees is the ranked lists returned to
+\emph{its own} fake accounts. This is stated in \texttt{formulation.tex}. In the
+code it is enforced by \code|DefenseConfig(black_box_mode=True)| (Part~VI), which
+hides the defender's private alerts from what the Coordinator observes.
+
+Now put the goal and the stealth need together. The attacker wants to solve
+\begin{equation}
+\max_{\{\tilde{\mathbf{r}}_w\}}\;
+\frac{1}{|\mathcal{U}_{\mathrm{test}}|}\sum_{u\in\mathcal{U}_{\mathrm{test}}}
+\mathbb{I}\!\left[i_{\mathrm{tar}}\in\mathrm{TopK}(u;\mathcal{A}(\mathbf{R}'))\right]
+\quad\text{s.t.}\quad \mathcal{S}(\tilde{\mathbf{R}};\mathbf{R})\le\varepsilon.
+\label{eq:objective}
+\end{equation}
+Here $\mathcal{A}$ is the victim's training procedure. The term
+$\mathcal{S}$ measures how strange the fake profiles look next to the real ones.
+The tolerance $\varepsilon$ is never a fixed constant in the code. Instead it is
+made real by the signals of Part~IV, which tell the Coordinator when to back off.
+This is the whole point of the paper. Older attacks solve \eqref{eq:objective}
+once, offline, with a fixed template. AGAS instead builds $\tilde{\mathbf{R}}$
+step by step over $T$ rounds, and it adapts as the platform reacts.
+
+\begin{center}
+\fbox{\parbox{0.92\textwidth}{
+\textbf{The whole system in one sentence.} A Coordinator agent adds fake ratings
+round by round. It chooses a strategy and a role for each fake user from black-box
+feedback. The target item's rank rises, and the fake profiles stay hard to tell
+apart from real ones.}}
+\end{center}
+
+
+%======================================================================
+\part*{Part II --- The lowest level: one fake rating}
+\addcontentsline{toc}{part}{Part II --- The lowest level: one fake rating}
+
+\section{The atom of the attack: a \texttt{RatingAction}}
+
+Everything the attack does is built from one small thing. One fake user rates one
+item. In the code this is a small dataclass,
+\code|src/agas/agents/messages.py::RatingAction|. It carries \code|agent_id|,
+which says which fake user acts. It carries \code|item_id|, which says which item.
+It carries \code|rating|, which is the value. And it carries a free-text
+\code|reason|, which is why the language model chose it.
+
+\section{How a rating enters the world}
+
+A proposed rating is not accepted right away. First it passes through the
+environment's defense filter,
+\code|src/agas/simulation/environment.py::_apply_action_with_defense|. This filter
+models a realistic platform in three steps.
+\begin{itemize}
+\item It compares the rating to the item's current \textbf{bias} $b_i$, which is
+just the item's average rating. The gap is $d=|r-b_i|$.
+\item If the gap $d$ is large and the fake user has low trust, the rating is
+\emph{discounted}. Its influence weight $w$ becomes less than one, and the
+effective rating becomes $b_i + w\,(r-b_i)$.
+\item If the platform is in ``lockdown'' and the user is not trusted, the rating
+may be \emph{dropped} entirely, with some probability.
+\end{itemize}
+Only accepted, effective ratings are added to $\tilde{\mathbf{R}}$. The result of
+each action, whether it was accepted, discounted, or dropped, is stored in an
+\code|ActionOutcome|. These outcomes are the raw material for every signal in
+Part~IV.
+
+\begin{remark}[Why a rating can hurt on a graph victim]
+On graph models such as LightGCN, every new edge raises the target's
+\emph{degree}. The degree normalisation $D^{-1/2}AD^{-1/2}$ then weakens all of
+the target's existing edges. So a naive ``rate the target 5.0'' can actually
+\emph{lower} its rank. This one fact is the reason the attack uses \emph{bridge
+items} (Part~VI) instead of rating the target directly on graph victims.
+\end{remark}
+
+\section{The poisoned matrix grows over time}
+
+Over the rounds $t=0,\dots,T-1$, the accepted actions pile up:
+\[
+\tilde{\mathbf{R}}\leftarrow \tilde{\mathbf{R}}\cup\Delta\tilde{\mathbf{R}}^{(t+1)},
+\qquad
+\mathbf{R}^{(t)}=[\mathbf{R};\,\tilde{\mathbf{R}}^{(\le t)}].
+\]
+After each round the victim is refit on $\mathbf{R}^{(t)}$, and a fresh target
+rank is read off. The final reported matrix is
+$\mathbf{R}'=[\mathbf{R};\tilde{\mathbf{R}}]$ from \eqref{eq:poison}. The piling up
+and the refit both happen in \code|environment.py::execute_step|, which calls
+\code|append_interactions(..., refit=True)|.
+
+
+%======================================================================
+\part*{Part III --- One fake user and its four roles}
+\addcontentsline{toc}{part}{Part III --- One fake user and its four roles}
+
+\section{A worker is a fake user with a policy}
+
+Each fake user is a \textbf{worker} agent,
+\code|src/agas/agents/worker.py::WorkerAgent|. A worker holds a small mutable
+state, \code|WorkerState|, which stores its trust, its risk, how many actions it
+has taken, and its role history. Every round the Coordinator hands the worker a
+\textbf{role}. The worker then turns that role into a list of
+\code|RatingAction|s. It does this by prompting a language model in
+\code|_act_with_llm|. If the model is not available, it falls back to simple
+deterministic rules.
+
+\section{The four roles \texorpdfstring{$\{$PR, SN, CA, IN$\}$}{PR SN CA IN}}
+
+The paper uses exactly four roles. The enum is \code|src/agas/roles.py::Role|. For
+the language-model protocol it is \code|messages.py::AgentRole|.
+
+\begin{center}
+\begin{tabular}{@{}llp{0.55\textwidth}@{}}
+\toprule
+Symbol & Name & What it does, and which item pool it may touch\\
+\midrule
+PR & Profiler & It makes a few safe filler ratings. It checks whether the platform
+still accepts ratings, and it helps find \emph{bridge items}. Its pool is the
+popular or benchmark items, the cluster items, or the bridge pool.\\
+SN & Sniper & This is the payload role. On embedding victims it rates the target
+directly. On graph victims it rates bridge or cluster items. It is given only to
+workers with high trust and low risk. Its pool is the target plus competitors, or
+the bridge pool.\\
+CA & Camouflageur & This is the stealth role. It rates harmless, unrelated
+``noise'' items so the fake user looks normal, and it rebuilds trust. Its pool is
+the noise items.\\
+IN & Inactive & It does nothing this round. It is used to cool a worker down or to
+quarantine it.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The map from a role to its allowed item pool and its action budget is in
+\code|worker.py::_candidate_context|. The pools themselves are built by the
+environment in \code|environment.py::build_worker_context|. These pools are the
+benchmark, cluster, competitor, noise, bridge, flooding, and segment-profile
+pools. After the language model answers, the host \emph{cleans} the reply in
+\code|worker.py::_sanitize_llm_actions|. Any item outside the allowed pool is
+thrown away, and every rating is clamped to the range $[1,5]$. This makes sure a
+worker can only ever do what its role allows.
+
+\section{How a role becomes a prompt}
+
+Each role has a system prompt and a user prompt. They live under
+\code|prompts/worker_*/| and are loaded by
+\code|src/agas/llm/prompt_store.py::PromptStore|. If a file is missing, the code
+falls back to defaults in \code|worker.py::_default_prompt_text|. Those defaults
+are further tuned to the detected victim class, such as MF, LightGCN-small,
+LightGCN-large, or Sequential. The worker fills a small JSON context. That context
+holds its own signals, the allowed items, and a short memory of its own recent
+outcomes. It sends this to the model through \code|src/agas/llm/providers.py| and
+reads back a strict-JSON list of actions. The number of tokens used by every call
+is added up for the efficiency figures.
+
+\begin{center}
+\fbox{\parbox{0.92\textwidth}{\textbf{Why role-switching gives stealth.} A fake
+user that only ever snipes looks like a bot. A fake user that profiles, then
+camouflages, then snipes once, then goes quiet, looks like a person. The
+Coordinator changes roles every round, so no fake account ever settles into one
+fixed signature. This is the mechanism behind the stealth results in Part~X.}}
+\end{center}
+
+
+%======================================================================
+\part*{Part IV --- The signals the Coordinator reads}
+\addcontentsline{toc}{part}{Part IV --- The signals the Coordinator reads}
+
+Every decision the Coordinator makes is driven by two families of numbers. Both
+live in \code|src/agas/signals.py| and match \code|method_coordinator.tex| in the
+paper. This is the mathematical heart of the system, so we build each number from
+scratch.
+
+\section{Worker signals: trust \texorpdfstring{$\tau$}{tau}, risk \texorpdfstring{$\gamma$}{gamma}, validator \texorpdfstring{$\phi$}{phi}}
+
+For each worker $w$ and round $t$ we keep three numbers. Let $r_{t,w}$ be an
+accepted rating. Let $b_i$ be the item bias. Let $d_{t,w}=|r_{t,w}-b_i|$ be the
+gap between them.
+
+\paragraph{Trust $\tau_{t,w}$.} Trust goes up by one only when the accepted rating
+looks benign. Benign means it stays within one point of the item's own average:
+\begin{equation}
+\tau_{t+1,w}=\max\!\bigl(0,\ \tau_{t,w}+\mathbb{I}[d_{t,w}\le 1]\bigr).
+\label{eq:trust}
+\end{equation}
+
+\paragraph{Risk $\gamma_{t,w}$.} Risk goes up when the action is far from the bias.
+It goes up even more when the action is extreme and the worker has not yet earned
+trust:
+\begin{equation}
+\gamma_{t+1,w}=\max\!\Bigl(0,\ \gamma_{t,w}
++0.5\,\mathbb{I}[d_{t,w}>1]
++0.5\,\mathbb{I}[d_{t,w}>1.5\wedge\tau_{t,w}<1]\Bigr).
+\label{eq:risk}
+\end{equation}
+If instead the worker stays inactive that round, its risk cools down:
+\begin{equation}
+\gamma_{t+1,w}=\max(0,\ \gamma_{t,w}-0.5).
+\label{eq:riskdecay}
+\end{equation}
+An explicit alert or a block adds a further $+0.5$.
+
+\paragraph{Validator $\phi_{t,w}$.} Trust and risk track \emph{recent actions}. The
+validator instead scores the \emph{whole profile} for how suspicious it looks:
+\begin{equation}
+\phi_{t,w}=\min\!\bigl(1,\ 0.4\,e_{t,w}+0.3\,h_{t,w}+0.3\,o_{t,w}\bigr).
+\label{eq:validator}
+\end{equation}
+Here $e$ is the fraction of extreme ratings. The flag $h\in\{0,1\}$ is one when the
+worker gave a clear positive to the target. And $o$ is the fraction of the
+worker's items that at least two other fake users also rated, which is a group
+overlap. Equations \eqref{eq:trust} through \eqref{eq:validator} are implemented,
+one method each, in \code|signals.py::WorkerSignals|. The three methods are
+\code|update_after_action|, \code|apply_inactive_decay|, and
+\code|update_validator|. The profile score also has a standalone version in
+\code|src/agas/agents/profile_validator.py|.
+
+\section{Environment signals: \texorpdfstring{$\rho,\Delta\rho,\eta,\xi,a$}{rho, delta-rho, eta, xi, a}}
+
+These are round-level numbers. They describe how the \emph{platform} is reacting.
+
+\paragraph{Rank feedback $\rho^{(t)}$ and $\Delta\rho^{(t)}$.} The number
+$\rho^{(t)}$ is the mean target rank, and lower is better. The change is
+$\Delta\rho^{(t)}=\rho^{(t-1)}-\rho^{(t)}$. A weak or negative $\Delta\rho$ tells
+the Coordinator that the current plan has stalled.
+
+\paragraph{Acceptance rate $\eta_t$.} This is the fraction of attempted actions
+that were accepted this round. A sudden drop hints that the platform is quietly
+filtering the attack.
+
+\paragraph{Suppression signal $\xi_t=(q_t,s_t)$.} This is the composite the
+Coordinator watches the most. Let $\mathcal{A}^{\mathrm{try}}_t,
+\mathcal{A}^{\mathrm{drop}}_t,\mathcal{A}^{\mathrm{acc}}_t,\mathcal{A}^{\mathrm{tar}}_t$
+be the attempted, dropped, accepted, and target-related actions of round $t$. From
+these we build five normalised terms:
+\begin{equation}
+\begin{aligned}
+\hat d_t &= \frac{|\mathcal{A}^{\mathrm{drop}}_t|}{\max(1,|\mathcal{A}^{\mathrm{try}}_t|)}
+&&\text{(dropped ratio)},\\
+\hat\delta_t &= \min\!\Bigl(1,\tfrac{1}{2|\mathcal{A}^{\mathrm{acc}}_t|}\textstyle\sum_{a}\delta(a)\Bigr)
+&&\text{(discount magnitude)},\\
+\hat m_t &= \frac{1}{\max(1,|\mathcal{A}^{\mathrm{tar}}_t|)}\textstyle\sum_a\mathbb{I}[\Delta\rho^{\mathrm{tar}}(a)<\epsilon_\rho]
+&&\text{(weak target movement)},\\
+\hat s_t &= \min(1,\ s_t/3) &&\text{(normalised streak)}.
+\end{aligned}
+\label{eq:suppterms}
+\end{equation}
+We also build a round-level group overlap. It is the largest pairwise Jaccard
+overlap between the workers' rated-item sets:
+\begin{equation}
+g_t=\max_{u\ne v}\frac{|A_{t,u}\cap A_{t,v}|}{|A_{t,u}\cup A_{t,v}|}.
+\label{eq:overlap}
+\end{equation}
+The suspicion score gives all five terms equal weight:
+\begin{equation}
+q_t=\min\!\bigl(1,\ 0.2\hat d_t+0.2\hat\delta_t+0.2\hat m_t+0.2\hat s_t+0.2g_t\bigr).
+\label{eq:qscore}
+\end{equation}
+The streak $s_t$ goes up whenever the round shows filtering, discounting, weak
+movement, or no rank gain. Otherwise it resets to zero.
+
+\paragraph{Alert flag $a_t\in\{0,1\}$.} This is a coarse trigger. It is set to one
+on an abnormal target spike, on very high overlap ($g_t\ge 0.8$), or on a sharp
+drop in acceptance.
+
+All of \eqref{eq:suppterms} through \eqref{eq:qscore}, together with $\eta_t$ and
+$a_t$, are computed in one method, \code|signals.py::EnvSignals.update|. The
+neutral start ($\eta_0=1,\ \xi_0=(0,0),\ a_0=0,\ \Delta\rho^{(0)}=0$) matches
+line~5 of Algorithm~1 in the paper and \code|signals.py::initial_env_signals|.
+
+\begin{remark}[Where the raw counts come from]
+The attacker never sees the defender's private state. So the counts that feed
+\eqref{eq:suppterms} are rebuilt from the black box. This is done by
+\code|src/agas/agents/defender.py::DefenseMonitorAgent.analyze|. It turns hidden
+accept, drop, and discount events into public ``signals'' that the Coordinator is
+allowed to read. That split is what keeps the threat model of \eqref{eq:objective}
+honest.
+\end{remark}
+
+
+%======================================================================
+\part*{Part V --- The Coordinator and its eight strategies}
+\addcontentsline{toc}{part}{Part V --- The Coordinator and its eight strategies}
+
+\section{What the Coordinator does each round}
+
+The Coordinator is the brain,
+\code|src/agas/agents/coordinator.py::Coordinator|. Each round it does four things.
+First it reads the observation, which is all the signals of Part~IV plus a short
+memory. Second it selects one round-level \textbf{strategy}. Third it gives each
+worker a role. Fourth, afterwards, it checks and gathers the accepted actions. The
+language model does the first three inside \code|LLMCoordinatorPolicy.assign|.
+After that, plain deterministic guardrails clean up the result, which we describe
+below. This whole thing is Algorithm~1, the outer loop, and Algorithm~2, the
+policy $\Pi$, in the paper.
+
+\section{The eight strategies}
+
+The enum is \code|src/agas/strategies.py::Strategy|. The plain descriptions are in
+\code|STRATEGY_DESCRIPTIONS| and in \code|method_strategies.tex|.
+
+\begin{center}
+\begin{tabular}{@{}llp{0.62\textwidth}@{}}
+\toprule
+\# & Name & Trigger and behaviour\\
+\midrule
+S1 & Victim Probe & In the early rounds, profilers probe to decide whether the
+victim is embedding-based or graph-based.\\
+S2 & Bridge Building & For graph victims only. Build a pool of bridge items for the
+snipers.\\
+S3 & Warm-up & Build trust $\tau$ with one profiler and a few camouflageurs before
+any sniper fires.\\
+S4 & First Push & The first coordinated payload. A few snipers act while a
+camouflageur stays on as cover.\\
+S5 & Silent Slowdown & Triggered when $\eta_t$ drops but $a_t=0$. Reduce pressure,
+and let high-trust workers act as camouflageurs.\\
+S6 & Profile Cleanup & Triggered when $\phi$ is high, or $\xi$ is climbing, or
+$a_t=1$. Freeze suspicious snipers and avoid overlap.\\
+S7 & Safe Replacement & In a high-risk state, rotate risky workers out and bring in
+rested, low-$\gamma$ ones.\\
+S8 & Main Attack & In a calm state with the target still far, promote the best
+worker to sniper and keep pushing.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The language model emits a role for each worker. The code then \emph{infers} which
+of S1 through S8 that pattern matches. This is done in
+\code|coordinator.py::_infer_strategy|, so the choice can be counted later for the
+ablation (Part~X).
+
+\section{The victim-probe state machine and the guardrail overlays}
+
+Two parts of the Coordinator are pure code, not the language model.
+
+\paragraph{Probe and classify (S1).} Before the campaign,
+\code|Coordinator._probe_classify| runs a small state machine. It rates the target
+directly and watches $\Delta\rho$. If the direct signal helps, the victim is
+embedding-based, which the code calls MF-style. If it hurts or does nothing, the
+victim is graph-based, which the code calls LightGCN-style. An optional
+``sequential'' probe tells apart recency-aware victims. The result sets
+\code|victim_model_class|, which then steers every prompt and item pool.
+
+\paragraph{Overlays (Algorithm~2, part ii).} After the language model proposes
+roles, a set of guardrails is applied in \code|Coordinator.assign_roles|. They
+stack on top of each other.
+\begin{itemize}
+\item \textbf{Suspicion lockout}, in \code|_apply_lockouts|. A sniper that recently
+drew drops, discounts, or alerts is forced off the sniper role for a few steps.
+\item \textbf{Validator guardrail}, in \code|_apply_validator_guardrail|. A worker
+whose $\phi$ is above a threshold is forced INACTIVE.
+\item \textbf{Profiler presence}, in \code|_ensure_profiler_presence|. This
+guarantees a periodic scout probe even if the model forgot to add one.
+\item \textbf{Co-occurrence bridging}, in \code|_apply_cooccurrence_bridging|. This
+stamps the chosen bridge-item method into each assignment for graph victims.
+\end{itemize}
+These overlays are exactly the components the ablation study switches off (Part~X),
+so each one has a stable name and a toggle.
+
+\section{Complexity}
+
+Let $T$ be the number of rounds. Let $|\mathcal{U}_f|$ be the number of workers.
+Let $L$ be the per-worker budget, and let $V$ be the cost of one victim query. One
+full campaign then costs
+\[
+O\!\bigl(T\,(c_C+|\mathcal{U}_f|(c_W+L)+V)\bigr).
+\]
+In words, there are $O(T)$ heavy Coordinator calls and $O(T|\mathcal{U}_f|)$ short
+worker calls. This is the complexity section of \texttt{method.tex}. The key point
+for the efficiency figures is that the cost grows linearly with the rounds and the
+workers. There is no GAN, no bi-level solve, and no per-target surrogate to
+retrain.
+
+
+%======================================================================
+\part*{Part VI --- The victims, and how a rank is measured}
+\addcontentsline{toc}{part}{Part VI --- The victims, and how a rank is measured}
+
+\section{The eleven victim models}
+
+The victims live in \code|src/agas/recsys/targets/|. They share a base class,
+\code|base.py::BaseTargetRecommender|. The base class handles the data indexing,
+implicit-versus-explicit training, \code|rank_item|, and
+\code|mean_scores_for_segment|. The concrete families are:
+\begin{itemize}
+\item \textbf{Matrix factorisation}, in \code|mf.py| (MF, GMF, BPR-MF, PMF, WMF,
+NMF), \code|neumf.py| (NeuMF and NCF), and \code|svdpp.py|.
+\item \textbf{Graph}, in \code|lightgcn.py| (LightGCN), \code|ngcf.py| (NGCF), and
+\code|gcmc.py|.
+\item \textbf{Others}, in \code|autorec.py| (autoencoders), \code|itemknn.py|, and
+\code|sequential.py|.
+\end{itemize}
+The map from a name to a class is \code|cli.py::_build_target_model|. There is also
+a fast CPU surrogate, \code|recsys/surrogate.py|, used for the inner loop when a
+full torch victim would be too slow.
+
+\section{Measuring the target rank}
+
+We give the model a set of segment users and a set of candidate items. Then
+\code|BaseTargetRecommender.rank_item| scores every candidate, sorts them, and
+returns the 1-based position of the target. The candidate set is the target's
+genre or keyword cluster, from
+\code|environment.py::_resolve_target_cluster_items|. In transfer mode it can be
+all items. This single number is the $\rho^{(t)}$ of Part~IV.
+
+\section{Bridge items, and why graph victims need them}
+
+We saw in Part~II that rating the target directly can hurt on a graph victim. So
+the snipers rate \emph{bridge items} instead. A bridge item sits on a short graph
+path from real target-fans to the target. Rating it lets graph diffusion carry the
+signal to the target, without inflating the target's own degree. The selection
+methods are in \code|environment.py::compute_bridge_items|. They include
+co-occurrence, gradient, two-hop, low-degree and high-degree structural, and an
+``auto'' method that chooses based on how many ratings the target already has. This
+is strategy S2.
+
+
+%======================================================================
+\part*{Part VII --- The round loop (Algorithm 1)}
+\addcontentsline{toc}{part}{Part VII --- The round loop (Algorithm 1)}
+
+\section{The episode runner}
+
+Everything above is tied together by
+\code|src/agas/simulation/episode.py::AGASEpisodeRunner.run|. This function
+\emph{is} Algorithm~1 of the paper. For each round $t$ it does the following.
+\begin{enumerate}
+\item It builds the observation $\mathbf{o}_t$ from the current signals and the
+short memory, in \code|environment.observation|.
+\item It optionally scores every worker's profile validator $\phi$.
+\item It calls \code|coordinator.assign_roles|. This returns one strategy and a
+role for each worker.
+\item Each worker acts, in \code|worker.act|. This returns a batch of
+\code|RatingAction|s.
+\item It calls \code|environment.execute_step|. This applies the defense filter,
+updates $\tau$ and $\gamma$, adds the accepted rows, refits the victim, and reads
+the new rank.
+\item It appends everything to \code|history|, and it stops early if the goal rank
+is reached.
+\end{enumerate}
+At the very end it also computes victim-side embedding-cluster metrics, in
+\code|src/agas/metrics/embedding_cluster.py|, for the stealth analysis. These
+metrics are never shown to the attacker.
+
+\section{Two ways to score the attack: Option A and Option B}
+
+The transfer command, \code|cli.py::cmd_run_transfer|, supports two protocols.
+\begin{itemize}
+\item \textbf{Option A, offline transfer.} Run the whole campaign on an
+\emph{episode} model, which is often the fast surrogate or a LightGCN. Then pull
+out the accepted fake interactions, add them to the clean data, and train
+\emph{fresh} victim models from scratch. Finally compare the target's rank on the
+clean data against the poisoned data.
+\item \textbf{Option B, in-loop.} Here the victim \emph{is} the episode model, and
+it retrains every round. So the Coordinator gets true rank feedback. After the run,
+a ``best-sequence retrain'' keeps only rounds $0$ through $t^\star$, where
+$t^\star=\arg\min_t\rho^{(t)}$, and retrains once more. This is the $t^\star$
+protocol noted in the README.
+\end{itemize}
+Both protocols write per-victim fields into the output JSON. Those fields are
+\code|initial_rank|, \code|final_rank|, \code|best_rank|, \code|hr_at_k|, and
+\code|ndcg_at_k|.
+
+
+%======================================================================
+\part*{Part VIII --- The end-to-end pipeline (how to run)}
+\addcontentsline{toc}{part}{Part VIII --- The end-to-end pipeline (how to run)}
+
+This part is the practical ``what do I type''. Every command is run from the repo
+root, \code|agent_attack_rs/|.
+
+\section{Install}
+
+\begin{lstlisting}[language=bash]
+pip install -e .            # core AGAS loop (CPU only)
+pip install -e '.[targets]' # add torch victims (LightGCN, NeuMF, ...)
+export OPENAI_API_KEY=sk-...   # required for the LLM Coordinator/workers
+export OPENAI_MODEL=gpt-5.1    # optional, default model id
+\end{lstlisting}
+If \code|OPENAI_API_KEY| is not set, the language-model calls fail and the workers
+fall back to deterministic behaviour. That is fine for a dry run, but the paper
+numbers use the language model.
+
+\section{Step 1 --- get and preprocess the data}
+
+Drop each raw dataset into \texttt{data/<name>/}. The links are in
+\texttt{README.md}. Then normalise everything into canonical
+\code|interactions.csv| and \code|items.csv| files:
+\begin{lstlisting}[language=bash]
+python scripts/preprocess_all.py --data-root data --output-root processed
+\end{lstlisting}
+This calls \code|cli.py::cmd_preprocess|, which calls
+\code|src/agas/data/pipeline.py|. The per-dataset loaders are in
+\code|src/agas/data/loaders/|. The output lands in \texttt{processed/<name>/}. For
+a quick smoke test, the tiny bundled \code|ml-latest-small| sample needs no
+download.
+
+\section{Step 2 --- run one attack episode}
+
+The single entry point is \code|scripts/run_agas.py|. It is a thin wrapper over
+\code|agas.cli run-episode|:
+\begin{lstlisting}[language=bash]
+python scripts/run_agas.py \
+    --dataset ml-100k --victim lightgcn \
+    --rounds 18 --seed 42 --n_workers 8 --budget 0.01 \
+    --out outputs/agas_ml100k_lightgcn_seed42.json
+\end{lstlisting}
+The seven flags map onto the paper's protocol. Here $T$ is \code|--rounds|,
+$|\mathcal{U}_f|$ is \code|--n_workers|, and $L$ is \code|--budget|. The run writes
+a JSON trace, and next to it a human-readable \code|.log|. The log holds the
+per-round ranks, the strategies, the roles, the token usage, and the role and
+strategy activation tallies.
+
+\section{Step 3 --- the four reviewer scripts, one per research question}
+
+The \texttt{bash/} folder runs a tiny sweep for each research question. Each script
+prints which figure or table it maps to.
+\begin{lstlisting}[language=bash]
+bash bash/run_performance.sh          # RQ1 -> tables/benchmark_unpopular.tex + radar
+bash bash/run_stealth_and_detect.sh   # RQ2 + RQ3 -> t-SNE figs + detection table
+bash bash/run_ablation.sh             # RQ4 -> ablation heatmaps + backbone table
+bash bash/run_efficiency.sh           # RQ5 -> efficiency figures
+\end{lstlisting}
+For the full paper, widen the loops inside each script to all 6 datasets, 11
+victims, and 5 seeds. The script \code|run_stealth_and_detect.sh| also runs the
+detector battery through \code|agas.cli evaluate-detectors|.
+
+\section{The output JSON, field by field}
+
+A \code|run-episode| output carries several fields. It has \code|initial_rank|,
+\code|final_rank|, and \code|best_rank| with its step. It has \code|history|, which
+is the per-round observation, assignments, reports, and feedback. It has
+\code|token_usage|, which is the coordinator, per-agent, and aggregate token
+counts. It has \code|activation_stats|, which is the role and S1 through S8
+strategy counts. And it has \code|embedding_cluster_metrics|. A
+\code|run-transfer| output instead carries \code|option_a| and \code|option_b|.
+Each of those is a dict keyed by victim with rank, HR, and NDCG before and after.
+These are exactly the fields Part~IX reads.
+
+
+%======================================================================
+\part*{Part IX --- From many runs to one number}
+\addcontentsline{toc}{part}{Part IX --- From many runs to one number}
+
+\section{The reporting convention}
+
+The paper reports the \textbf{mean and the 95\% confidence interval over 5 runs}.
+The 5 runs are 5 random seeds. In this guide we use seeds \textbf{42, 43, 44, 45,
+46}. Every promotion metric is also scaled by $10^3$. So a table cell that reads
+``$40.0\pm0.2$'' means $\mathrm{HR}@10=0.0400\pm0.0002$. In other words, each cell
+is the aggregate of 5 JSON files that differ only in the \code|--seed| flag.
+
+\section{The aggregation helper}
+
+The AGAS engine writes one JSON per run. On its own it does not produce the
+aggregated cells. That last mile, from runs to numbers, is what
+\code|scripts/aggregate_results.py| does. This script was added alongside this
+document. It works in five steps.
+\begin{enumerate}
+\item It walks an output directory and loads every \code|*.json| inside it.
+\item It recognises both schemas, the \code|run-episode| one and the
+\code|run-transfer| one.
+\item It turns each reported rank into HR@$K$ and NDCG@$K$ with the same formula
+\eqref{eq:rank2hrndcg} the CLI uses, which is \code|_rank_to_hr_ndcg|.
+\item It groups the runs by \code|(config, dataset, victim)| and prints the mean
+and the 95\% CI, in the $\times 10^3$ convention.
+\item It can also write a tidy CSV that a plotting script can read.
+\end{enumerate}
+\begin{lstlisting}[language=bash]
+# aggregate a seed sweep into HR@10 / NDCG@10 / rank-delta with 95% CI
+python scripts/aggregate_results.py outputs/multiseed_welltrained
+# RQ1 sweep, also dump a CSV for the plot scripts
+python scripts/aggregate_results.py outputs/rq1_performance --k 10 --csv summary.csv
+# efficiency: also report mean tokens per run
+python scripts/aggregate_results.py outputs/rq5_efficiency --tokens
+\end{lstlisting}
+
+\begin{remark}[An honest caveat: proxy versus population HR]
+The released smoke outputs use the single-target-rank proxy
+\eqref{eq:rank2hrndcg}. So their HR@10 is either 0 or 1 per run. It is not the
+smooth population average \eqref{eq:hr} used in the big tables. For this reason the
+aggregation script also reports \code|rank_delta|, which is how far the target
+climbed. That number is stable and always defined. To reproduce the population
+HR@$K$ exactly, you must evaluate \eqref{eq:hr} over the full
+$\mathcal{U}_{\mathrm{test}}$ set on the retrained victim. The needed hooks,
+\code|rank_item|, \code|mean_scores_for_segment|, and the segment users, are all
+present in \code|base.py| and \code|environment.py|.
+\end{remark}
+
+
+%======================================================================
+\part*{Part X --- Figure and table reproduction guide}
+\addcontentsline{toc}{part}{Part X --- Figure and table reproduction guide}
+
+This is the part to read when the question is simply ``which file do I run to get
+picture $X$?''. Two facts frame everything.
+
+\begin{center}
+\fbox{\parbox{0.93\textwidth}{
+\textbf{(1) The drawing scripts only draw.} They live in \texttt{../code/}, the
+paper folder, and they are pure \texttt{matplotlib}. Given numbers, they render a
+\texttt{.png} into \texttt{../figures/}. Several of them still keep their numbers in
+a hard-coded array.\\[2pt]
+\textbf{(2) The numbers come from this repo}, \code|agent_attack_rs|. You run the
+engine (Part~VIII), then aggregate (Part~IX), then paste the aggregated values into
+the drawing script's data block, or point the script at the CSV.}}
+\end{center}
+
+\noindent
+The order to run things is always the same:
+\[
+\text{preprocess}\ \to\ \text{bash RQ script}\ \to\ \text{\texttt{aggregate\_results.py}}\ \to\ \text{drawing script in \texttt{../code/}}.
+\]
+
+\subsection*{Suggested first run}
+Start with the smallest end-to-end path, just to see the whole loop work:
+\begin{lstlisting}[language=bash]
+python scripts/preprocess_all.py --data-root data --output-root processed
+bash bash/run_performance.sh
+python scripts/aggregate_results.py outputs/rq1_performance --csv summary.csv
+python ../code/benchmark_popularity_regime_summary.py   # renders the radar
+\end{lstlisting}
+
+\subsection{Honest status: what this repo generates, and what it does not}
+\label{sec:status}
+
+Not every figure can be produced end to end by this repo alone, and it is only
+fair to say so plainly. This repo implements the \textbf{AGAS} attack. It does
+\emph{not} re-implement the ten baseline attacks (RandomAttack, Bandwagon, AUSH,
+PoisonRec, PGA, GSPAttack, TargetedAttack, CLeaR, AgentSA, AgentAttack) or the
+five detectors (BaseDetect, DHAGCN, PCASelectUsers, GAGE, MD-CBA). So the AGAS row
+or column of every figure is generatable from the engine. The baseline and
+detector entries are not, and this document does not fabricate them. They must come
+from those methods' own code.
+
+\begin{center}
+\footnotesize
+\renewcommand{\arraystretch}{1.2}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}p{0.34\textwidth}p{0.60\textwidth}@{}}
+\toprule
+Figure or table & Status in this repo\\
+\midrule
+Main table (\code|benchmark_unpopular.tex|) & AGAS rows: yes. Baseline rows: not implemented.\\
+Popularity / intro radar & AGAS polygon: yes. Baseline polygons: not implemented.\\
+Budget trade-off & Yes, fully (AGAS only figure).\\
+Ablation strategy heatmap & Yes, fully (added the \code|--disable-strategies| flag).\\
+Ablation component / size heatmap & Yes, fully (roles, memory, signals, validator, coordinator flags).\\
+Efficiency rounds trade-off & HR@10 per round: yes. Time line: yes, now that runtime is recorded.\\
+Efficiency method vs time & AGAS bar and line: yes. Baseline bars and lines: not implemented.\\
+Tokens-until-Top-10 & AGAS tokens and seconds: yes. Baseline bars: not implemented.\\
+Detector table (\code|detection_mf.tex|) & Not generatable: needs the 5 detectors and an \code|evaluate-detectors| command, neither present.\\
+Benign Rec@10 bars & Not generatable: needs Rec@$K$, which needs a benign train/test split the pipeline does not create.\\
+Stealth t-SNE (both panels) & Embeddings exist, but no export script yet. The drawing scripts currently simulate the points.\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\noindent
+Three of these gaps are quick and I closed the first: (1) the efficiency
+\emph{time} axes needed wall-clock timing, so the episode now records
+\code|runtime_sec| (total) and \code|elapsed_sec|/\code|cumulative_sec| per round,
+read with \code|aggregate_results.py --timing|. (2) Rec@$K$ and (3) the detector
+battery are larger, because they need a benign split and the detector
+implementations respectively, so they remain honest gaps rather than stubs. If you
+want any specific baseline or detector implemented, that is a separate, scoped
+piece of work.
+
+\subsection{The one chain every quantitative figure shares}
+\label{sec:chain}
+
+Before we go figure by figure, here is the one chain that turns a single run into a
+single plotted number. Every line, bar, and heatmap figure is just this chain,
+evaluated at different settings and then arranged on axes. It has four steps.
+
+\paragraph{Step 1: a rank is produced.} During a run, the victim is refit and the
+target's position among the candidate items is read off. This is done by
+\code|src/agas/recsys/targets/base.py::rank_item| (line~132). That function scores
+every candidate, runs \code|torch.argsort(scores, descending=True)|, and returns
+the 1-based position of the target $i_{\mathrm{tar}}$. Inside the loop it is called
+through \code|environment.py::_target_rank| (line~277) and stored as
+\code|self.current_rank| after every round, in \code|environment.py::execute_step|
+(line~706). Call this integer $\rho$.
+
+\paragraph{Step 2: the rank becomes HR and NDCG.} The CLI turns a rank into the two
+promotion metrics with the formula \eqref{eq:rank2hrndcg}. This is
+\code|cli.py::_rank_to_hr_ndcg| (line~124), where
+$\mathrm{HR}@K=\mathbb{I}[\rho\le K]$ and
+$\mathrm{NDCG}@K=\mathbb{I}[\rho\le K]/\log_2(\rho+1)$. In \code|cmd_run_transfer|
+this happens in the \code|for k in metrics_ks| loop, at lines~1321--1326 for
+Option~A and at lines~1462 and 1576 for the other paths. That loop writes
+\code|hr_at_k| and \code|ndcg_at_k|, together with the clean-versus-poisoned
+\code|initial_rank| and \code|final_rank| (lines~1307--1314), into the run's JSON.
+
+\paragraph{Step 3: the runs are averaged.} We run each setting 5 times, once per
+seed (42, 43, 44, 45, 46), so there are 5 JSON files. The script
+\code|scripts/aggregate_results.py| reads those files. It re-applies the same
+\code|rank_to_hr_ndcg| (line~44), groups the runs by
+\code|(config, dataset, victim)| (line~198), and returns the mean and the 95\% CI
+over the 5 seeds through \code|mean_ci| (line~51), scaled by $10^3$. Call the mean
+$\bar y$ and the CI half-width $c$.
+
+\paragraph{Step 4: the number is placed on an axis.} The mean $\bar y$ becomes a
+bar height, or a line's $y$, or a heatmap cell value. The half-width $c$ becomes
+the error bar. Which axis or cell it lands in depends only on the loop variable
+that produced the run. That variable is the round $t$, the budget $b$, the ablated
+component, the dataset, or the victim.
+
+So for every figure below we only need three things. We need to know which loop
+variable is swept. We need the command that runs it. And we need to know how the
+resulting pair of a setting and its $\bar y$ is drawn. The efficiency figures
+replace Step~2 with token and time counters. The tokens come from
+\code|cli.py::_collect_token_usage| (line~615), in the field
+\code|token_usage.aggregate.total_tokens|. The role and strategy tallies come from
+\code|_compute_activation_stats| (line~661). The wall-clock comes from the run
+timing.
+
+\subsection{Performance: the main table and the radar (RQ1)}
+
+\subsubsection*{Main table \texorpdfstring{\code|benchmark_unpopular.tex|}{benchmark unpopular} (Tab.~I)}
+The loop variable swept is the triple (dataset, victim, seed). Run it like this:
+\begin{lstlisting}[language=bash]
+# widen the loops in run_performance.sh to all datasets/victims, 5 seeds
+bash bash/run_performance.sh
+python scripts/aggregate_results.py outputs/rq1_performance --k 10 --csv rq1.csv
+\end{lstlisting}
+Each printed line of \code|rq1.csv| is one cell block of the table. The column
+\code|hr@10_x1000_mean| and its \code|hr@10_x1000_ci| form the ``$40.0\pm0.2$''
+entry. The column \code|ndcg@10_x1000_mean| gives the NDCG entry. Steps 1 through 3
+of the chain produce each number. The table just lays out the victim and the metric
+in columns, and the method in rows. Here ``method'' means which config produced the
+run. AGAS is the full system. The baselines are separate scripts, but their rows
+are filled the same way, going from rank to HR and NDCG to the mean and CI.
+
+\subsubsection*{Popularity radar \texorpdfstring{\code|benchmark_popularity_regime_summary.py|}{popularity radar}}
+This figure shows three victim families, which are MF, graph-conv, and
+graph-contrastive. In each family, every attack method is drawn as a filled
+quadrilateral over four axes. The four axes are NDCG@10, HR@10, NDCG@50, and
+HR@50.
+
+The numbers come from RQ1 with head and mid targets across the three families.
+After aggregation you get, for each method $m$ and family $f$, one vector
+$v_{m,f}=[\text{NDCG@10},\text{HR@10},\text{NDCG@50},\text{HR@50}]$.
+
+Now the drawing. In \code|benchmark_popularity_regime_summary.py| that vector is
+the dict entry \code|RAW[m][f]|. For example, \code|RAW["AGAS"]["mf"]| is
+\code|[58,70,70,78]|. The four axes are angles $\theta_k=2\pi k/4$ from
+\code|radar_angles|, with \code|set_theta_offset(pi/2)| and direction $-1$. For one
+method, vertex $k$ of its polygon is the polar point $(\theta_k,\ v_{m,f}[k])$. The
+call \code|ax.plot(angles, values)| draws the outline, and \code|ax.fill| shades
+it, both inside \code|draw_radar|. So on the radar the angle tells you which metric
+you are on, and the radius tells you the value of that metric. To make the figure
+data-driven, replace the \code|RAW| block with your aggregate. The intro radar,
+\code|intro_fig_radar_motivation.py|, is built the same way, but it is split by
+popularity regime instead of by victim family.
+
+\subsection{Stealthiness: the two t-SNE panels (RQ2)}
+
+\subsubsection*{Left panel \texorpdfstring{(\code|benchmark_fig7_tsne_distance_users_target.py|)}{}}
+This panel has one small plot per method, six in all. It samples nine users. Next
+to each user it prints two numbers. The red number is the distance from that user
+to the target item. The black number is the user's average distance to its own
+ground-truth items. A method is best when both numbers are small. That means the
+target was pulled close to the user, and the user was not dragged away from its
+real tastes.
+
+These two numbers come from a poisoned victim's learned vectors. After a run, the
+surrogate exposes \code|user_factors| and \code|item_factors| in
+\code|recsys/surrogate.py|. Embed the target item $i_{\mathrm{tar}}$, each sampled
+user $u$, and the items $u$ rated. Call the red number $A_u$ and the black number
+$B_u$. Then $A_u=\lVert e_u-e_{i_{\mathrm{tar}}}\rVert$ and
+$B_u=\frac{1}{|\mathcal I^{+}_u|}\sum_{i\in\mathcal I^{+}_u}\lVert e_u-e_i\rVert$.
+The way to reach the victim's vectors mirrors
+\code|src/agas/metrics/embedding_cluster.py|, which already pulls the factor
+matrices. That file uses cosine distance, and here we use Euclidean, but the hook
+is the same.
+
+Now an important caveat about the drawing. In this script the \emph{positions} of
+the stars are not the distances. They are a stylised layout, set by
+\code|ANGLES_DEG| and the per-method \code|LAYOUT[radius]|. The layout is the same
+across panels so the eye can compare spread. The real data are only the printed
+numbers. They live in the dict entry
+\code|PROFILES[method][user]|, which is the pair $(A_u,B_u)$. They are drawn by
+\code|ax.text(...)| at the star for the black number and at the connector midpoint
+for the red number, inside \code|plot_panel|. So to make it real, replace the
+\code|PROFILES| block with your measured $(A_u,B_u)$. The layout stays decorative
+on purpose.
+
+\subsubsection*{Right panel \texorpdfstring{(\code|dappoison_fig6_tsne.py|)}{}}
+This panel has one 2-D t-SNE scatter per method. Blue dots are clean users, and red
+stars are injected fake users. Diffuse red is stealthy, and clustered red is easy
+to detect.
+
+The numbers come from a poisoned matrix $\mathbf R'$. Get each user's history
+embedding from the victim, then run \code|sklearn.manifold.TSNE| down to two
+dimensions. The clean points are the real users. The fake points are the rows of
+$\tilde{\mathbf R}$. The fake user ids are \code|agent_1..agent_N|, and the
+injected rows come from \code|cli.py::_extract_attack_interactions|. Each point is
+one $(x,y)$, its t-SNE coordinate. The call \code|ax.scatter| plots blue circles
+for the clean users and red stars for the fake ones, inside \code|plot_panel|. One
+note on the current state. The script simulates the two clouds with Gaussian
+generators such as \code|fakes_agas| and \code|fakes_poisonrec|, so it renders
+without a run. To make it data-driven, feed the real 2-D coordinates in place of
+those generators.
+
+\subsection{Detector: the table and the Rec@10 bars (RQ3)}
+
+\subsubsection*{Detection table \texorpdfstring{\code|detection_mf.tex|}{detection}}
+The loop variable swept is the pair (dataset, method). Run
+\code|bash bash/run_stealth_and_detect.sh|. It first produces a poisoned trace,
+then scores that trace with
+\code|agas.cli evaluate-detectors --detectors BaseDetect,DHAGCN,PCASelectUsers,GAGE,MD-CBA|.
+Each detector returns four numbers, which are Accuracy, Recall, Precision, and F1,
+on the fake-versus-real labels. Those four numbers become the four sub-columns of
+one block, for each pair of a detector and a method. Lower numbers mean the attack
+is harder to detect.
+
+\subsubsection*{Benign Rec@10 bars \texorpdfstring{(\code|detect_fig_defense_k5.py|)}{}}
+This figure has three victims, which are NeuMF, LightGCN, and LightCCF. Each method
+gets one horizontal bar. The solid part of the bar is the Rec@10 after the attack.
+The hatched remainder is the no-attack ceiling. The printed percentage is the drop
+in utility.
+
+There are two numbers per bar. Call them $A$ and $B$. The value $B$ is the Rec@$K$
+of the clean victim, the one with no injected users. The value $A$ is the Rec@$K$
+of the poisoned victim. Rec@$K$ is \eqref{eq:recK}. To get it, evaluate each test
+user's held-out item on the retrained model, using the same \code|rank_item|
+machinery but scoring the user's own item instead of the target. So $B$ uses the
+clean fit and $A$ uses the poisoned fit. These are exactly the clean and attacked
+pair that the transfer command already builds, namely \code|clean_model| and
+\code|attacked_model| in \code|cli.py| lines~1305--1316.
+
+Now the drawing. In the script, \code|NO_ATTACK[victim]| is $B$ and
+\code|AFTER_ATTACK[victim][method]| is $A$. Take the method at row $y_i$. The call
+\code|ax.barh(y, before)| draws the full hatched bar, whose length is $B$. Then
+\code|ax.barh(y, after)| draws the solid bar on top, whose length is $A$. The
+leftover gap $B-A$ is the grey segment. Finally
+\code|ax.text(..., f"{100*(B-A)/B:.0f}%")| prints the drop, all inside
+\code|draw_panel|. So the $x$ position is the Rec@10 value, the $y$ position is the
+method index, the solid bar length is $A$, and the ceiling is $B$.
+
+\subsection{Ablation: two heatmaps and a table (RQ4)}
+
+First, a word on notation. In these figures ``w/o'' just means ``without''. Each
+``w/o~X'' row is one run of AGAS with component X switched off. We compare that run
+to the ``Full'' run, which has everything on. If the number drops a lot, then X
+mattered.
+
+\subsubsection*{The full command for every row}
+Every ablation row is a real flag on \code|scripts/run_agas.py|. Nothing here needs
+a source edit. This one block runs the entire RQ4 sweep, all rows, across the 5
+seeds. Copy, paste, run.
+\begin{lstlisting}[language=bash]
+DATASET=ml-100k ; VICTIM=lightgcn
+COMMON="--dataset $DATASET --victim $VICTIM --rounds 18 --n_workers 8 --budget 0.01"
+mkdir -p outputs/rq4
+
+for seed in 42 43 44 45 46; do
+  # Full system (everything on) -- the baseline the "w/o" rows are compared to
+  python scripts/run_agas.py $COMMON --seed $seed \
+      --coordinator-agent-memory --profile-validator \
+      --out outputs/rq4/full__seed${seed}.json
+
+  # ----- component / size heatmap rows -----
+  python scripts/run_agas.py $COMMON --seed $seed --random-coordinator      --out outputs/rq4/wo_coordinator__seed${seed}.json
+  python scripts/run_agas.py $COMMON --seed $seed --disable-roles pr        --out outputs/rq4/wo_profiler__seed${seed}.json
+  python scripts/run_agas.py $COMMON --seed $seed --disable-roles sn        --out outputs/rq4/wo_sniper__seed${seed}.json
+  python scripts/run_agas.py $COMMON --seed $seed --disable-roles ca        --out outputs/rq4/wo_camouflageur__seed${seed}.json
+  python scripts/run_agas.py $COMMON --seed $seed --disable-roles in        --out outputs/rq4/wo_inactive__seed${seed}.json
+  python scripts/run_agas.py $COMMON --seed $seed --no-coordinator-agent-memory --out outputs/rq4/wo_memory__seed${seed}.json
+  python scripts/run_agas.py $COMMON --seed $seed --disable-signals         --out outputs/rq4/wo_signals__seed${seed}.json
+  python scripts/run_agas.py $COMMON --seed $seed --no-profile-validator    --out outputs/rq4/wo_validator__seed${seed}.json
+
+  # ----- strategy heatmap rows -----
+  for s in s1 s2 s3 s4 s5 s6 s7 s8; do
+    python scripts/run_agas.py $COMMON --seed $seed --disable-strategies $s \
+        --out outputs/rq4/wo_${s}__seed${seed}.json
+  done
+done
+
+# turn the 5-seed runs into one mean +/- 95% CI per row
+python scripts/aggregate_results.py outputs/rq4 --k 10 --csv rq4.csv
+\end{lstlisting}
+The wrapper \code|bash bash/run_ablation.sh| runs exactly this (set
+\code|SEEDS="42"| for a quick one-seed smoke). To read one row on its own, just take
+its line. For example, the exact command for ``w/o~S7'' is
+\begin{lstlisting}[language=bash]
+python scripts/run_agas.py --dataset ml-100k --victim lightgcn \
+    --rounds 18 --n_workers 8 --budget 0.01 --seed 42 \
+    --disable-strategies s7 --out outputs/rq4/wo_s7__seed42.json
+\end{lstlisting}
+and the exact command for ``w/o~Profiler'' is the same line with
+\code|--disable-roles pr| in place of \code|--disable-strategies s7|.
+
+\subsubsection*{What each row removes (plain words)}
+\begin{center}
+\footnotesize
+\renewcommand{\arraystretch}{1.2}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{@{}llp{0.46\textwidth}@{}}
+\toprule
+Row & Flag & What it takes away\\
+\midrule
+w/o Coordinator & \code|--random-coordinator| & roles are chosen at random, not by the LLM\\
+w/o Profiler & \code|--disable-roles pr| & no probing or bridge discovery (those workers become camouflageurs)\\
+w/o Sniper & \code|--disable-roles sn| & no targeted payload (snipers become camouflageurs)\\
+w/o Camouflageur & \code|--disable-roles ca| & no benign filler cover (camouflageurs go inactive)\\
+w/o Inactive & \code|--disable-roles in| & no cool-down, everyone always acts\\
+w/o Memory & \code|--no-coordinator-agent-memory| & the Coordinator forgets earlier rounds\\
+w/o Signals & \code|--disable-signals| & trust, risk, validator, suppression, and alerts are hidden (only raw rank remains)\\
+w/o Validator & \code|--no-profile-validator| & the profile-suspicion guardrail is off\\
+w/o S1 & \code|--disable-strategies s1| & no Victim Probe (skip the probe phase)\\
+w/o S2 & \code|--disable-strategies s2| & no Bridge Building\\
+w/o S3 & \code|--disable-strategies s3| & no Warm-up (prompt-level)\\
+w/o S4 & \code|--disable-strategies s4| & no First Push (prompt-level)\\
+w/o S5 & \code|--disable-strategies s5| & no Silent Slowdown (prompt-level)\\
+w/o S6 & \code|--disable-strategies s6| & no Profile Cleanup guardrail\\
+w/o S7 & \code|--disable-strategies s7| & no Safe Replacement (no suspicion lockout)\\
+w/o S8 & \code|--disable-strategies s8| & no Main Attack push (prompt-level)\\
+\bottomrule
+\end{tabular}
+\end{center}
+Two honest notes. First, you can combine flags, for example
+\code|--disable-roles pr,sn| or \code|--disable-strategies s1,s7|. Second, S1, S2,
+S6, S7 and every component row are hard switches that always take effect. S3, S4,
+S5, S8 are behaviours the language model produces on its own, so ``w/o'' for those
+is done by telling the Coordinator in its prompt not to use them. The model usually
+obeys but is not forced.
+
+\subsubsection*{Strategy heatmap \texorpdfstring{(\code|ablation_strategy_heatmap.py|)}{}}
+This figure has four panels, one per dataset. In each panel the rows are Full, then
+w/o~S1 through w/o~S8. The columns are three victims, which are NeuMF, LightGCN,
+and LightCCF. The colour of a cell, and the number in it, is HR@10. You produce the
+rows with the \code|--disable-strategies s1 ... s8| runs above.
+
+Now the drawing. The script holds a matrix \code|VALUES[dataset]| of shape
+$9\times3$. Row $i$ is the ablation config, and column $j$ is the victim. The call
+\code|ax.imshow(values, cmap="YlOrRd_r")| colours cell $(i,j)$ by its HR@10, and
+\code|ax.text(j, i, f"{val:.1f}")| prints the number, both inside
+\code|draw_panel|. So the cell at row $i$, column $j$ is the HR@10, scaled by
+$10^3$. Darker or brighter follows the colour bar. To fill it with your own runs,
+replace the \code|VALUES| block with the aggregate from
+\code|aggregate_results.py|.
+
+\subsubsection*{Component and size heatmap \texorpdfstring{(\code|ablation_size_heatmap.py|)}{}}
+The drawing is identical to the strategy heatmap. What changes is the axes. The rows
+are now Full, w/o~Coordinator, w/o~Profiler, w/o~Sniper, w/o~CA, w/o~IN,
+w/o~Memory, and w/o~Signals, which are the component runs above. The columns are the
+backbone size, which is Large, Medium, or Small. You set the size by adding
+\code|--worker-llm-model| to any of those commands. For example, one Large cell for
+the ``w/o~Sniper'' row is:
+\begin{lstlisting}[language=bash]
+python scripts/run_agas.py --dataset ml-100k --victim lightgcn \
+    --rounds 18 --n_workers 8 --budget 0.01 --seed 42 \
+    --disable-roles sn --worker-llm-model llama-3.3-70b \
+    --out outputs/rq4/wo_sniper__large__seed42.json
+\end{lstlisting}
+Use a 14B model for Medium and a 2B model for Small. So one cell is: run AGAS with
+this size and this component removed, then read the aggregated HR@10.
+
+\subsubsection*{Backbone table \texorpdfstring{\code|ablation_backbones.tex|}{backbones}}
+This uses the same size sweep over language-model backbones, grouped as frontier,
+large, medium, and small. You set the backbone with \code|--worker-llm-model| (and
+\code|--llm-model| for the Coordinator). Each cell is HR@10, NDCG@10, and Rec@50,
+aggregated per pair of a backbone and a method.
+
+\subsection{Efficiency: rounds, time, tokens, and budget (RQ5)}
+
+\subsubsection*{Rounds trade-off \texorpdfstring{(\code|efficiency_rounds_tradeoff.py|)}{}}
+This is a plot with two y-axes. The bars are HR@10 per round, on the left axis. The
+red line is the cumulative minutes per round, on the right axis. A vertical dashed
+line marks the chosen budget, $T=18$.
+
+The loop variable swept is the round index $t$. Inside one run, the per-round rank
+is already in \code|history[t].feedback.target_rank|. Convert each rank with
+\code|_rank_to_hr_ndcg| to get HR@10 at round $t$, then average over seeds for the
+bar height and its CI. The line value is the wall-clock elapsed up to round $t$,
+which the episode now records as \code|cumulative_sec| in each \code|history| entry
+(and \code|runtime_sec| for the whole run). Read the totals with
+\code|aggregate_results.py --timing|.
+
+Now the drawing. The arrays \code|HR10[t]|, \code|HR10_CI[t]|, and
+\code|TIME_MIN[t]| are indexed by \code|ROUNDS|, which runs from 1 to 30. The call
+\code|ax1.bar(ROUNDS, HR10)| places a bar at $x=t$ of height \code|HR10[t]|, and
+\code|ax1.errorbar(...)| adds whiskers of size \code|HR10_CI[t]|. The twin axis
+call \code|ax2.plot(ROUNDS, TIME_MIN)| draws the point $(t,\text{minutes}(t))$.
+Finally \code|ax1.axvline(18)| marks the budget. So a bar is the pair
+$(x=t,\ y=\overline{\mathrm{HR}@10}(t))$ and a line point is the pair
+$(x=t,\ y=\overline{\text{minutes}}(t))$.
+
+\subsubsection*{Method versus time \texorpdfstring{(\code|efficiency_method_time_compare.py|)}{}}
+This shows four datasets as x-groups, with five methods in each group. Each method
+gets a bar, which is HR@10 on the left axis, and a line marker, which is the total
+runtime in minutes on the right axis.
+
+The loop variable swept is the pair (method, dataset). The bar height is the
+aggregated HR@10 for that pair, from Steps 1 through 3. The line value is the mean
+total minutes of those runs.
+
+Now the drawing. The arrays \code|HR10[m]| and \code|TIME_MIN[m]| are length-4
+lists over the datasets. With \code|x=arange(4)| and a per-method \code|offsets|,
+the call \code|ax1.bar(x+offset[m], HR10[m])| puts method $m$'s bar for dataset $d$
+at $x=d+\text{offset}(m)$, with height \code|HR10[m][d]|. The twin call
+\code|ax2.plot(x+offset[m], TIME_MIN[m])| draws its runtime marker at the same $x$.
+So the bar height is the effectiveness, and the marker height is the cost, read on
+opposite axes.
+
+\subsubsection*{Tokens until Top-10 \texorpdfstring{(\code|efficiency_token_topk.py|)}{}}
+This shows grouped bars on a log y-axis. The bar is the average number of
+language-model tokens spent before the target first enters the Top-10. There are
+three agentic methods across four datasets. A side table lists the inference
+seconds.
+
+Here is how to get the numbers. Walk a run's \code|history| to the first round
+$t^\ast$ where \code|feedback.target_rank| is at most 10. Then sum the per-call
+tokens up to $t^\ast$. Each report carries \code|trace.token_usage.total_tokens|,
+and the run total is \code|token_usage.aggregate.total_tokens| from
+\code|_collect_token_usage| (line~615). Average this over seeds. The seconds column
+is the matched wall-clock. The command
+\code|python scripts/aggregate_results.py <dir> --tokens| prints the per-run token
+mean that feeds this figure.
+
+Now the drawing. The arrays \code|TOKENS[m]| and \code|TIME_S[m]| are length-4
+lists. The call \code|ax_bar.bar(x+offset[m], TOKENS[m])| with
+\code|ax_bar.set_yscale("log")| makes a bar at $x=d+\text{offset}(m)$ whose height,
+on a log scale, is the token count. The call \code|ax_bar.text(...)| prints a label
+such as ``55K'' above it. The right-hand \code|ax_tab.table| lists \code|TIME_S|
+row by row, dataset first and method within. So the bar height, on a log scale, is
+the tokens, and the table cell is the seconds.
+
+\subsubsection*{Budget trade-off \texorpdfstring{(\code|efficiency_fig_agents_tradeoff.py|)}{}}
+This has a 2-by-2 grid of subplots, one per dataset. In each subplot there are four
+lines, which are HR@10, NDCG@10, HR@50, and NDCG@50. The x-axis is the fake-user
+budget, from 0.5\% to 3.0\%.
+
+The loop variable swept is the budget $b$. The script \code|run_efficiency.sh|
+loops \code|--budget 0.005 0.01 0.02 0.03|, and you can add 0.015 and 0.025. Each
+budget value is one x-tick. Aggregate HR and NDCG per budget.
+
+Now the drawing. The entry \code|VALUES[dataset][metric]| is a length-6 list over
+\code|BUDGETS=[0.5,1,1.5,2,2.5,3]|. For each metric, the call
+\code|ax.plot(BUDGETS, VALUES[dataset][metric])| draws the point
+$(x=b,\ y=\text{metric}(b))$ and connects the points, one styled line per metric.
+So each line is one metric as the budget grows, and the four lines share the
+subplot.
+
+\subsection{Tables at a glance}
+
+\begin{center}
+\footnotesize
+\renewcommand{\arraystretch}{1.25}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}p{0.20\textwidth}p{0.30\textwidth}p{0.42\textwidth}@{}}
+\toprule
+Table (in \texttt{main.pdf}) & Produced by (this repo) & Numbers from\\
+\midrule
+\code|benchmark_unpopular.tex| (Tab.~I, main result) &
+\code|bash/run_performance.sh| over all datasets and victims &
+\code|option_a| or \code|option_b| ranks turned into HR and NDCG by
+\code|aggregate_results.py|\\
+\code|benchmark_popularity_regime.tex| &
+the same, with head and mid target items &
+the same aggregation on head and mid target bins\\
+\code|detection_mf.tex| (detector table) &
+\code|bash/run_stealth_and_detect.sh|, then \code|evaluate-detectors| &
+detector Accuracy, Recall, Precision, and F1 per method\\
+\code|ablation_mf.tex|, \code|ablation_backbones.tex| &
+\code|bash/run_ablation.sh| with component toggles, plus \code|--worker-llm-model|
+for the backbones &
+HR and NDCG per ablated config, aggregated over seeds\\
+\code|efficiency_breakdown.tex| &
+\code|bash/run_efficiency.sh| &
+per-stage wall-clock from the run timing\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\begin{remark}[Illustrative versus data-driven, said plainly]
+Today several drawing scripts carry a hard-coded data block. These are \code|RAW|,
+\code|VALUES|, \code|HR10|, \code|TOKENS|, \code|PROFILES|, and the t-SNE
+generators. That block is only the last inch of Step~4. It has exactly the shape
+that the aggregation in Part~IX prints. So making a figure data-driven means one
+thing. You paste the aggregated array, or read the \code|--csv|, in place of the
+hard-coded one. Nothing about the geometry changes. The engine in this repo owns
+every number, and the scripts in \texttt{../code/} own only the drawing.
+\end{remark}
+
+
+%======================================================================
+\part*{Part XI --- Everything in one place}
+\addcontentsline{toc}{part}{Part XI --- Everything in one place}
+
+\section{Every equation, and where it lives}
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}llp{0.46\textwidth}@{}}
+\toprule
+Quantity & Equation & File and symbol\\
+\midrule
+Top-$K$ recommendation & \eqref{eq:topk} & \code|recsys/*::recommend| and \code|rank_item|\\
+Poisoned matrix & \eqref{eq:poison} & \code|*::append_interactions|\\
+HR@$K$, NDCG@$K$ & \eqref{eq:hr},\eqref{eq:ndcg} & \code|experiment.tex| (population)\\
+rank to HR and NDCG & \eqref{eq:rank2hrndcg} & \code|cli.py::_rank_to_hr_ndcg|\\
+Attack objective & \eqref{eq:objective} & \code|formulation.tex|\\
+Trust $\tau$ & \eqref{eq:trust} & \code|signals.py::update_after_action|\\
+Risk $\gamma$ & \eqref{eq:risk},\eqref{eq:riskdecay} & \code|signals.py::update_after_action| and \code|apply_inactive_decay|\\
+Validator $\phi$ & \eqref{eq:validator} & \code|signals.py::update_validator|\\
+Suppression terms & \eqref{eq:suppterms} & \code|signals.py::EnvSignals.update|\\
+Group overlap $g_t$ & \eqref{eq:overlap} & \code|signals.py::EnvSignals.update|\\
+Suspicion $q_t$ & \eqref{eq:qscore} & \code|signals.py::EnvSignals.update|\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Every file that matters}
+
+\begin{center}
+\footnotesize
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{@{}p{0.40\textwidth}p{0.54\textwidth}@{}}
+\toprule
+File & Role\\
+\midrule
+\code|scripts/run_agas.py| & single entry point for one episode\\
+\code|scripts/preprocess_all.py| & dataset into canonical CSVs\\
+\code|scripts/aggregate_results.py| & runs into aggregated numbers (added by this doc)\\
+\code|bash/run_*.sh| & one sweep per research question\\
+\code|src/agas/roles.py|, \code|strategies.py| & the 4 roles and the 8 strategies\\
+\code|src/agas/signals.py| & all worker and environment signals\\
+\code|src/agas/agents/coordinator.py| & strategy choice, role assignment, guardrails\\
+\code|src/agas/agents/worker.py| & per-role action generation\\
+\code|src/agas/agents/defender.py| & black-box signal reconstruction\\
+\code|src/agas/simulation/episode.py| & the round loop (Algorithm 1)\\
+\code|src/agas/simulation/environment.py| & defense filter, refit, rank, item pools, bridges\\
+\code|src/agas/recsys/targets/*| & the 11 victim models\\
+\code|src/agas/metrics/embedding_cluster.py| & victim-side stealth metric\\
+\code|prompts/*| & Coordinator and per-role prompt templates\\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{The whole pipeline in one paragraph}
+
+First preprocess the datasets into canonical CSVs. Then run
+\code|scripts/run_agas.py|, or a \code|bash/run_*.sh| sweep, to play out $T$
+rounds. In each round a Coordinator language model reads the trust, risk, and
+validator signals, and the rank, acceptance, suppression, and alert signals. It
+picks one of eight strategies and gives each fake user one of four roles.
+Deterministic guardrails keep the campaign stealthy. Each round the victim is
+refit and the target's rank is read again. This produces one JSON trace per run.
+Next, aggregate those traces across five seeds with
+\code|scripts/aggregate_results.py| into HR@$K$ and NDCG@$K$, reported as the mean
+and 95\% CI and scaled by $10^3$. Finally feed those numbers to the matplotlib
+scripts in \texttt{../code/} to draw every figure in \texttt{main.pdf}.
+
+\end{document}

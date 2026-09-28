@@ -22,3 +22,29 @@ pdfs/
 outputs/
 
 .DS_Store
+
+# LaTeX build artifacts (keep the .tex and .pdf, drop the intermediates)
+*.aux
+*.toc
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+*.bcf
+*.run.xml
+*.nav
+*.snm
+*.vrb
+*.lof
+*.lot
+*.idx
+*.ind
+*.ilg
+*.glo
+*.gls
+*.acn
+*.acr
+*.alg
+*.xdv

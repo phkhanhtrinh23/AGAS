@@ -121,6 +121,49 @@ def _parse_int_list(raw: str | None, *, default: list[int]) -> list[int]:
     return out
 
 
+def _parse_disabled_roles(raw: str | None) -> "set[AgentRole]":
+    """Parse a comma-separated ``--disable-roles`` value into AgentRole objects.
+
+    Accepts the paper short symbols and the long names, case-insensitively:
+    ``pr/profiler``, ``sn/sniper``, ``ca/camouflageur``, ``in/inactive``.
+    Empty / ``none`` yields the empty set (nothing disabled).
+    """
+
+    if not raw:
+        return set()
+    text = str(raw).strip().lower()
+    if text in {"", "none", "null"}:
+        return set()
+    alias = {
+        "pr": AgentRole.PROFILER, "profiler": AgentRole.PROFILER,
+        "sn": AgentRole.SNIPER, "sniper": AgentRole.SNIPER,
+        "ca": AgentRole.CAMOUFLAGEUR, "camouflageur": AgentRole.CAMOUFLAGEUR,
+        "camouflaguer": AgentRole.CAMOUFLAGEUR,
+        "in": AgentRole.INACTIVE, "inactive": AgentRole.INACTIVE,
+    }
+    out: set[AgentRole] = set()
+    for tok in text.split(","):
+        tok = tok.strip()
+        if not tok:
+            continue
+        if tok not in alias:
+            raise argparse.ArgumentTypeError(
+                f"Unknown role in --disable-roles: {tok!r} (use pr/sn/ca/in)"
+            )
+        out.add(alias[tok])
+    return out
+
+
+def _parse_disabled_strategies(raw: str | None) -> "set[str]":
+    """Parse ``--disable-strategies`` into canonical Strategy values (RQ4)."""
+
+    from agas.agents.coordinator import normalize_disabled_strategies
+    try:
+        return normalize_disabled_strategies(raw)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(str(e)) from e
+
+
 def _rank_to_hr_ndcg(rank: int, k: int) -> tuple[float, float]:
     """Compute HR@K and NDCG@K from a 1-based rank (single relevant item)."""
 
@@ -235,21 +278,27 @@ def _build_coordinator_and_workers(
         Tuple ``(coordinator, workers)``.
     """
 
-    if args.coordinator_policy == "openai":
-        client = build_llm_client(provider="openai", model=args.llm_model, api_key=args.openai_api_key or os.getenv("OPENAI_API_KEY"))
+    # RQ4 "w/o Coordinator": replace the LLM policy with random role assignment.
+    if bool(getattr(args, "random_coordinator", False)):
+        from agas.agents.coordinator import RandomCoordinatorPolicy
+        policy = RandomCoordinatorPolicy(agent_order=agent_ids, seed=int(getattr(args, "seed", 42)))
+        print("w/o Coordinator ablation: using RANDOM role assignment (no LLM Coordinator).")
     else:
-        client = build_llm_client(provider="ollama", model=args.llm_model, host=args.ollama_host)
-    policy = LLMCoordinatorPolicy(
-        client=client,
-        agent_order=agent_ids,
-        prompt_store=prompt_store,
-        temperature=args.llm_temperature,
-        temperature_end=args.llm_temperature_end,
-        total_steps=total_steps,
-        precomputed_bridge_items=precomputed_bridge_items or [],
-        min_active_fraction=float(getattr(args, "min_active_fraction", 0.4)),
-        min_sniper_fraction=float(getattr(args, "min_sniper_fraction", 0.0)),
-    )
+        if args.coordinator_policy == "openai":
+            client = build_llm_client(provider="openai", model=args.llm_model, api_key=args.openai_api_key or os.getenv("OPENAI_API_KEY"))
+        else:
+            client = build_llm_client(provider="ollama", model=args.llm_model, host=args.ollama_host)
+        policy = LLMCoordinatorPolicy(
+            client=client,
+            agent_order=agent_ids,
+            prompt_store=prompt_store,
+            temperature=args.llm_temperature,
+            temperature_end=args.llm_temperature_end,
+            total_steps=total_steps,
+            precomputed_bridge_items=precomputed_bridge_items or [],
+            min_active_fraction=float(getattr(args, "min_active_fraction", 0.4)),
+            min_sniper_fraction=float(getattr(args, "min_sniper_fraction", 0.0)),
+        )
 
     lock_role = AgentRole.INACTIVE
     if getattr(args, "sniper_lock_role", None):
@@ -287,6 +336,9 @@ def _build_coordinator_and_workers(
         probe_repeats=int(getattr(args, "probe_repeats", 1)),
         probe_use_graph=bool(getattr(args, "probe_use_graph", False)),
         probe_consensus=bool(getattr(args, "probe_consensus", False)),
+        disabled_roles=_parse_disabled_roles(getattr(args, "disable_roles", None)),
+        disabled_strategies=getattr(args, "disable_strategies", None),
+        disable_signals=bool(getattr(args, "disable_signals", False)),
     )
     # Attach is also performed inside Coordinator.__init__, but kept here for
     # backwards compatibility with callers that build coordinators differently.
@@ -966,6 +1018,10 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
     # Compute bridge items BEFORE building the coordinator so they can be injected
     # into the coordinator's context and skip warm-up profiler rounds.
     bridge_method = str(getattr(args, "profiler_bridge_method", "none")).strip().lower()
+    # RQ4 "w/o S2": if Bridge Building is ablated, do not pre-select bridge items.
+    _disabled_strats = _parse_disabled_strategies(getattr(args, "disable_strategies", None))
+    if "S2_BRIDGE_BUILDING" in _disabled_strats:
+        bridge_method = "none"
     precomputed_bridge: list[str] = []
     if bridge_method not in ("", "none"):
         n_bridge = max(50, int(getattr(args, "profiler_actions", 3)) * 8)
@@ -1052,6 +1108,7 @@ def cmd_run_episode(args: argparse.Namespace) -> int:
         "history": result.history,
         "embedding_cluster_metrics": result.embedding_cluster_metrics,
         "token_usage": token_usage,
+        "runtime_sec": float(getattr(result, "runtime_sec", 0.0)),
     }
     activation_stats = _compute_activation_stats(episode_output)
     episode_output["activation_stats"] = activation_stats
@@ -1744,6 +1801,41 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include per-agent recent outcomes in coordinator observation.",
     )
     p_run.add_argument(
+        "--disable-roles",
+        default=None,
+        help=(
+            "Comma-separated roles to ablate (RQ4 'w/o <role>'). Any listed role is "
+            "never assigned; it is remapped to a benign fallback (PR/SN->CA, CA->IN, "
+            "IN->CA). Use short symbols pr,sn,ca,in or long names. "
+            "Example: --disable-roles sn  (run without the Sniper role)."
+        ),
+    )
+    p_run.add_argument(
+        "--disable-strategies",
+        default=None,
+        help=(
+            "Comma-separated strategies to ablate (RQ4 'w/o S1..S8'). "
+            "s1 skips the probe phase, s2 disables bridge building, s6 disables the "
+            "validator guardrail, s7 disables the suspicion lockout. s3/s4/s5/s8 are "
+            "emergent, so they are dropped from the coordinator prompt. "
+            "Example: --disable-strategies s5."
+        ),
+    )
+    p_run.add_argument(
+        "--random-coordinator",
+        action="store_true",
+        default=False,
+        help="RQ4 'w/o Coordinator': assign roles at random instead of using the "
+             "LLM Coordinator.",
+    )
+    p_run.add_argument(
+        "--disable-signals",
+        action="store_true",
+        default=False,
+        help="RQ4 'w/o Signals': blank the trust/risk/validator/suppression/alert "
+             "signals before the Coordinator sees them (raw rank is kept).",
+    )
+    p_run.add_argument(
         "--profile-validator",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -1901,6 +1993,36 @@ def build_parser() -> argparse.ArgumentParser:
         action=argparse.BooleanOptionalAction,
         default=True,
         help="Include per-agent recent outcomes in coordinator observation.",
+    )
+    p_transfer.add_argument(
+        "--disable-roles",
+        default=None,
+        help=(
+            "Comma-separated roles to ablate (RQ4 'w/o <role>'). Any listed role is "
+            "never assigned; it is remapped to a benign fallback (PR/SN->CA, CA->IN, "
+            "IN->CA). Use short symbols pr,sn,ca,in or long names."
+        ),
+    )
+    p_transfer.add_argument(
+        "--disable-strategies",
+        default=None,
+        help=(
+            "Comma-separated strategies to ablate (RQ4 'w/o S1..S8'): "
+            "s1 probe, s2 bridge, s6 validator guardrail, s7 suspicion lockout; "
+            "s3/s4/s5/s8 are dropped from the coordinator prompt."
+        ),
+    )
+    p_transfer.add_argument(
+        "--random-coordinator",
+        action="store_true",
+        default=False,
+        help="RQ4 'w/o Coordinator': random role assignment instead of the LLM.",
+    )
+    p_transfer.add_argument(
+        "--disable-signals",
+        action="store_true",
+        default=False,
+        help="RQ4 'w/o Signals': blank the engineered signals before the Coordinator.",
     )
     p_transfer.add_argument(
         "--profile-validator",

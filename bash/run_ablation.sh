@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # -----------------------------------------------------------------------------
-# RQ4 (Ablation): disable one component (or one strategy) at a time and
-# measure the drop vs the full system.
+# RQ4 (Ablation): switch off ONE thing at a time and measure the drop against
+# the full system.  "w/o X" means "without X".
 # -----------------------------------------------------------------------------
-# Outputs:
-#   outputs/rq4_ablation/<config>__seed<seed>.json
-# Mapping to the paper:
-#   - figures/ablation_summary.png            (cross-dataset bars)
-#   - figures/ablation_strategy_heatmap.png   (per-strategy heatmap)
-#   - figures/ablation_size_heatmap.png       (per-model-size heatmap)
-#   - tables/ablation_backbones.tex           (backbone ablation table)
+# Runs, for every seed, the Full config plus one run per ablation row of both
+# heatmaps (figures/ablation_strategy_heatmap.png and ablation_size_heatmap.png).
+# Every row here is a real, self-contained flag -- nothing needs a code edit.
+#
+# Output: outputs/rq4_ablation/<dataset>__<victim>__<config>__seed<seed>.json
+# Aggregate afterwards with:
+#   python scripts/aggregate_results.py outputs/rq4_ablation --csv rq4.csv
 
 set -euo pipefail
 
@@ -19,50 +19,44 @@ mkdir -p "${OUT_DIR}"
 
 DATASET="${DATASET:-ml-latest-small}"
 VICTIM="${VICTIM:-lightgcn}"
-SEED="${SEED:-42}"
 ROUNDS="${ROUNDS:-18}"
 N_WORKERS="${N_WORKERS:-8}"
 BUDGET="${BUDGET:-0.01}"
+# The paper averages over 5 seeds. Override with e.g. SEEDS="42" for a quick smoke.
+SEEDS="${SEEDS:-42 43 44 45 46}"
 
-# Each ablation flag turns off exactly one component. The legacy CLI accepts
-# the same --strategic-disable-* flags used internally by the Coordinator.
-CONFIGS=(
-  "full"                       # baseline — all components on
-  "no_S1_VICTIM_PROBE"          # disable strategy S1
-  "no_S2_BRIDGE_BUILDING"       # disable strategy S2
-  "no_S5_SILENT_SLOWDOWN"       # disable strategy S5
-  "no_S6_PROFILE_CLEANUP"       # disable strategy S6
-  "no_S7_SAFE_REPLACEMENT"      # disable strategy S7
-  "no_validator"               # ablate φ_{t,w} validator
-)
+COMMON=(--dataset "${DATASET}" --victim "${VICTIM}" --rounds "${ROUNDS}" \
+        --n_workers "${N_WORKERS}" --budget "${BUDGET}")
 
-echo "[RQ4] Ablation sweep on ${DATASET} / ${VICTIM}"
+run() {   # run <config-name> <extra flags...>
+  local cfg="$1"; shift
+  local out="${OUT_DIR}/${DATASET}__${VICTIM}__${cfg}__seed${SEED}.json"
+  echo "=== ${cfg} (seed ${SEED}) ==="
+  python "${ROOT}/scripts/run_agas.py" "${COMMON[@]}" --seed "${SEED}" "$@" \
+    --out "${out}" || echo "  (${cfg} failed; continuing)"
+}
+
+echo "[RQ4] Ablation sweep on ${DATASET} / ${VICTIM}, seeds: ${SEEDS}"
 echo "[RQ4] Output directory: ${OUT_DIR}"
-echo "[RQ4] Maps to figures/ablation_summary.png and figures/ablation_strategy_heatmap.png"
 
-for cfg in "${CONFIGS[@]}"; do
-  out="${OUT_DIR}/${DATASET}__${VICTIM}__${cfg}__seed${SEED}.json"
-  echo "=== ablation: ${cfg} ==="
+for SEED in ${SEEDS}; do
+  # Full system (everything on): the baseline the "w/o" rows are compared against.
+  run full --coordinator-agent-memory --profile-validator
 
-  extra_args=()
-  case "${cfg}" in
-    no_S1_VICTIM_PROBE)        extra_args+=(--strategic-disable-probe-classify) ;;
-    no_S2_BRIDGE_BUILDING)     extra_args+=(--strategic-disable-cooccurrence-bridging) ;;
-    no_S5_SILENT_SLOWDOWN)     extra_args+=(--strategic-disable-stealth) ;;
-    no_S6_PROFILE_CLEANUP)     extra_args+=(--strategic-disable-validator-guardrail) ;;
-    no_S7_SAFE_REPLACEMENT)    extra_args+=(--strategic-disable-suspicion-lockout) ;;
-    no_validator)              extra_args+=(--strategic-disable-validator-guardrail) ;;
-    full) ;;
-  esac
+  # ---- component / size heatmap rows (figures/ablation_size_heatmap.png) ----
+  run wo_coordinator   --random-coordinator
+  run wo_profiler      --disable-roles pr
+  run wo_sniper        --disable-roles sn
+  run wo_camouflageur  --disable-roles ca
+  run wo_inactive      --disable-roles in
+  run wo_memory        --no-coordinator-agent-memory
+  run wo_signals       --disable-signals
+  run wo_validator     --no-profile-validator
 
-  python "${ROOT}/scripts/run_agas.py" \
-    --dataset "${DATASET}" \
-    --victim "${VICTIM}" \
-    --rounds "${ROUNDS}" \
-    --seed "${SEED}" \
-    --n_workers "${N_WORKERS}" \
-    --budget "${BUDGET}" \
-    --out "${out}" || echo "  (ablation '${cfg}' failed; continuing)"
+  # ---- strategy heatmap rows (figures/ablation_strategy_heatmap.png) ----
+  for s in s1 s2 s3 s4 s5 s6 s7 s8; do
+    run "wo_${s}" --disable-strategies "${s}"
+  done
 done
 
-echo "[RQ4] Done."
+echo "[RQ4] Done. Aggregate with: python scripts/aggregate_results.py ${OUT_DIR} --csv rq4.csv"
